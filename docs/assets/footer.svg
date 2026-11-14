@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="170" viewBox="0 0 1200 170" role="img" aria-label="Built by Krish Hingu · MIT License">
+  <defs>
+    <linearGradient id="w1" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#d9773f"/><stop offset="1" stop-color="#3f6fe0"/>
+    </linearGradient>
+    <linearGradient id="w2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3f6fe0"/><stop offset="1" stop-color="#2b2560"/>
+    </linearGradient>
+    <style>
+      .a { animation: drift 9s ease-in-out infinite; }
+      .b { animation: drift 7s ease-in-out infinite reverse; }
+      @keyframes drift { 0%,100% { transform: translateX(0); } 50% { transform: translateX(-120px); } }
+      .f { font: 600 20px 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; fill: #ffffff; }
+      .g { font: 400 15px 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; fill: #e3e6ff; }
+    </style>
+  </defs>
+  <g class="b" opacity="0.55">
+    <path fill="url(#w2)" d="M0 70 C 200 30, 400 110, 600 70 S 1000 30, 1200 70 S 1400 110, 1400 70 L 1400 170 L 0 170 Z"/>
+  </g>
+  <g class="a" opacity="0.9">
+    <path fill="url(#w1)" d="M0 95 C 200 135, 400 55, 600 95 S 1000 135, 1200 95 S 1400 55, 1400 95 L 1400 170 L 0 170 Z"/>
+  </g>
+  <text x="600" y="138" text-anchor="middle" class="f">Built with ♥ by Krish Hingu</text>
+  <text x="600" y="160" text-anchor="middle" class="g">Claude Relay · MIT License · 2026</text>
+</svg>
