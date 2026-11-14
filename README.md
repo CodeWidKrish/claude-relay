@@ -1,9 +1,13 @@
 # Claude Relay
 
-**Keep coding when Claude Code hits its 5-hour limit.**
-Claude Relay hands your task from **Claude Code** to **Google Antigravity** when your Claude Pro session limit runs out, either automatically or when you type `/handoff`. It hands the work back when the limit resets.
+**Use Google Antigravity directly from Claude Code, and keep coding when Claude Code hits its 5-hour limit.**
 
-![Python](https://img.shields.io/badge/python-3.8%2B-blue) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen) ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey) ![Tests](https://img.shields.io/badge/tests-21%2F21%20passing-brightgreen) ![License](https://img.shields.io/badge/license-MIT-green)
+Claude Relay does two things:
+
+1. **`/ask-antigravity`**: from inside a running Claude Code session, Claude sends a question or sub-task to Antigravity and gets the answer back. You stay in Claude.
+2. **Auto / manual switch**: when your Claude Pro 5-hour limit runs out, it hands your task to Antigravity with full context, either automatically or when you type `/handoff`. It hands the work back when the limit resets.
+
+![Python](https://img.shields.io/badge/python-3.8%2B-blue) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen) ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey) ![Tests](https://img.shields.io/badge/tests-28%2F28%20passing-brightgreen) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ```
 Claude Code ──(5h limit hit  /  you type /handoff)──► .relay/HANDOFF.md ──► Antigravity (agy)
@@ -40,6 +44,7 @@ Opening another agent is easy. **Moving the context** is the hard part: the goal
 
 ## Features
 
+- **`/ask-antigravity`**: use Antigravity *inside* a Claude Code session, for a second opinion, a review or a research sub-task. Read-only by default; the answer is saved to `.relay/answers/`.
 - **Live usage bar** in Claude Code: `5h █████████░ 92%  resets 15:00`
 - **Prepares at 90%.** The handoff is written while Claude can still answer, because at 100% it can't.
 - **Automatic switch.** When the usage limit stops Claude, Antigravity opens in a new window with the task loaded, plus a desktop notification.
@@ -60,6 +65,7 @@ Opening another agent is easy. **Moving the context** is the hard part: the goal
 | 3b. Manual switch | `/handoff` → Claude adds a summary → Antigravity opens | Claude Code **custom slash command** |
 | 4. Continue | Antigravity reads the handoff first and logs progress in it | Antigravity **rules**: `.agents/rules/relay-handoff.md` |
 | 5. Switch back | `relay.py back --launch` → Claude Code opens with the progress | `claude "<prompt>"` |
+| ★ Ask inside the session | `/ask-antigravity <request>` → Claude writes `.relay/ask.md` → `agy --mode plan -p …` → Claude reads the answer and continues | Claude Code **slash command** + Antigravity CLI **headless mode** (`-p`) |
 
 `StopFailure` can fire several times for one limit, so Relay switches only **once per 15 minutes**.
 
@@ -99,6 +105,7 @@ python /path/to/claude-relay/relay.py simulate --live   # really opens Antigravi
 
 | You want to… | Do this |
 |---|---|
+| Ask Antigravity something without leaving Claude | Type **`/ask-antigravity <your question>`** in Claude Code, or `python relay.py ask "<question>"` |
 | See how much of the 5-hour limit is left | Look at the Claude Code status line |
 | Switch to Antigravity now | Type **`/handoff`** in Claude Code, or `python relay.py handoff --launch` |
 | Switch automatically | Nothing: auto mode does it when the limit is hit |
@@ -114,6 +121,7 @@ python /path/to/claude-relay/relay.py simulate --live   # really opens Antigravi
 | `doctor` | Checks Python, `claude`, `agy`, git and the installation |
 | `handoff [--launch] [--cwd DIR]` | Writes `.relay/HANDOFF.md` (and opens Antigravity) |
 | `launch [--cwd DIR]` | Opens Antigravity on the existing handoff |
+| `ask "<question>" \| --file F [--allow-edits] [--timeout 600]` | Asks Antigravity headless and prints the answer (read-only unless `--allow-edits`) |
 | `back [--launch] [--cwd DIR]` | Hands the work back to Claude Code |
 | `simulate [--live] [--cwd DIR]` | Demo: usage 45% → 85% → 92% → limit hit → switch |
 | `status` | Shows config, last known usage and recent log lines |
@@ -161,12 +169,12 @@ Environment variables: `RELAY_DRY_RUN=1` (print instead of launching), `RELAY_HO
 **What `install` adds to Claude Code**
 ![Claude settings](docs/images/claude-settings.png)
 
-**Test suite: 21/21 passing**
-![Tests](docs/images/tests-21-passed.png)
+**Test suite: 28/28 passing**
+![Tests](docs/images/tests-passed.png)
 
 ## Tested conditions
 
-Run `python tests/test_relay.py`. It needs neither Claude Code nor Antigravity.
+Run `python tests/test_relay.py` (28 scenarios). It needs neither Claude Code nor Antigravity; a fake `agy` is used for the `/ask-antigravity` tests.
 
 | Condition | Behaviour |
 |---|---|
@@ -182,8 +190,10 @@ Run `python tests/test_relay.py`. It needs neither Claude Code nor Antigravity.
 | Invalid `settings.json` | Install stops, changes nothing |
 | Re-install | No duplicate hooks; other settings kept |
 | `resets_at` as seconds, milliseconds or ISO text | All handled |
+| `/ask-antigravity` with Unicode, an empty question, or `agy` missing | Answer, usage message, or clear error (exit code 2) |
+| `agy` installed as a Windows `.cmd` launcher | Multi-line requests and `% & ^` characters are passed through a file, so nothing is cut off |
 
-**Verified on:** Windows 11 (Python 3.14, Claude Code 2.1.221, Antigravity CLI 1.4.12) and Linux.
+**Verified on:** Windows 11 (Python 3.14, Claude Code 2.1.221, Antigravity CLI 1.4.12) and Linux. `/ask-antigravity` verified live on Windows 11 with the real Antigravity CLI.
 
 ## Troubleshooting
 
@@ -208,6 +218,9 @@ No. Claude Code and Antigravity each use their own sign-in.
 **Can Antigravity use Claude models?**
 Paid Antigravity tiers offer Claude models. Set one with `install --model "<exact name from agy models>"`.
 
+**Can I use Antigravity without switching away from Claude?**
+Yes: `/ask-antigravity <request>`. Claude sends the request to Antigravity's headless mode (`agy -p`) and gets the answer back in the same session. By default Antigravity runs in **plan mode (read-only)**, so it can't change your files; Claude asks you before applying anything it suggests.
+
 **Does it work with the Antigravity IDE?**
 Yes. The handoff rule lives in `.agents/rules/`, which the IDE also reads. Open the project in the IDE and ask it to continue.
 
@@ -228,7 +241,7 @@ No. Relay only reads local files and starts local programs.
 claude-relay/
 ├── relay.py              # the whole tool (standard library only)
 ├── tests/
-│   ├── test_relay.py     # 21 end-to-end and edge-case tests
+│   ├── test_relay.py     # 28 end-to-end and edge-case tests
 │   └── sample_output.txt
 ├── docs/images/          # screenshots used in this README
 ├── README.md

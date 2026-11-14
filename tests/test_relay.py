@@ -222,6 +222,73 @@ def main():
         assert "relay.py" not in json.dumps(s) and s.get("model") == "sonnet"
     case("21 uninstall removes Relay and keeps other settings", t_uninstall)
 
+    # ---- /ask-antigravity: use Antigravity from inside a Claude Code session (fake agy) ----
+    fake = home / "fakebin"
+    fake.mkdir()
+    (fake / "agy_fake.py").write_text(
+        "import sys\nsys.stdout.reconfigure(encoding='utf-8')\nargs=sys.argv[1:]\n"
+        "prompt=args[args.index('-p')+1] if '-p' in args else ''\n"
+        "import os\n"
+        "if 'ask-prompt.md' in prompt:\n"
+        "    prompt=open(os.path.join('.relay','ask-prompt.md'),encoding='utf-8').read()\n"
+        "mode=args[args.index('--mode')+1] if '--mode' in args else 'none'\n"
+        "print('FAKE-AGY mode=' + mode)\nprint('ANSWER to: ' + prompt.split('REQUEST:')[-1].strip())\n",
+        encoding="utf-8")
+    if os.name == "nt":
+        (fake / "agy.cmd").write_text(f'@"{sys.executable}" "%~dp0agy_fake.py" %*\r\n')
+    else:
+        sh = fake / "agy"
+        sh.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/agy_fake.py" "$@"\n')
+        sh.chmod(0o755)
+    env_ask = dict(env, RELAY_DRY_RUN="0", PATH=str(fake) + os.pathsep + env.get("PATH", ""))
+
+    def t_ask_cmd_installed():
+        run(["install"], env=env)
+        cmd = (home / ".claude" / "commands" / "ask-antigravity.md").read_text(encoding="utf-8")
+        assert "$ARGUMENTS" in cmd and "ask --file .relay/ask.md" in cmd
+        assert "/ask-antigravity command installed" in run(["doctor"], env=env)
+    case("22 install adds /ask-antigravity; doctor checks it", t_ask_cmd_installed)
+
+    def t_ask_question():
+        out = run(["ask", "How should I validate brightness 0-100?", "--cwd", str(project)], env=env_ask)
+        assert "FAKE-AGY mode=plan" in out, "should run read-only (plan mode) by default"
+        assert "ANSWER to: How should I validate brightness 0-100?" in out
+        saved = list((project / ".relay" / "answers").glob("*.md"))
+        assert saved and "validate brightness" in saved[0].read_text(encoding="utf-8")
+    case("23 ask: Antigravity answers inside the session (read-only), answer saved", t_ask_question)
+
+    def t_ask_file():
+        q = project / ".relay" / "ask.md"
+        q.write_text("Review routes.py for bugs (उदाहरण)", encoding="utf-8")
+        out = run(["ask", "--file", str(q), "--allow-edits", "--cwd", str(project)], env=env_ask)
+        assert "mode=accept-edits" in out and "Review routes.py" in out
+    case("24 ask --file with Unicode + --allow-edits", t_ask_file)
+
+    def t_ask_prompt_file():
+        e = dict(env_ask, RELAY_PROMPT_FILE="1")
+        out = run(["ask", "Line one\nLine two with 100% & special ^ chars", "--cwd", str(project)], env=e)
+        assert "Line one" in out and "Line two with 100% & special ^ chars" in out, out
+        assert (project / ".relay" / "ask-prompt.md").exists()
+    case("25 ask on Windows .cmd launchers: multi-line request + % & ^ arrive intact", t_ask_prompt_file)
+
+    def t_ask_missing():
+        e = dict(env, RELAY_DRY_RUN="0", PATH="")
+        p = subprocess.run([sys.executable, str(RELAY), "ask", "hi", "--cwd", str(project)],
+                           capture_output=True, env=e, cwd=env["PROJECT"])
+        assert p.returncode == 2 and b"not found on PATH" in p.stdout
+    case("26 ask without Antigravity installed: clear error, exit code 2", t_ask_missing)
+
+    def t_ask_empty():
+        p = subprocess.run([sys.executable, str(RELAY), "ask", "--cwd", str(project)],
+                           capture_output=True, env=env, cwd=env["PROJECT"])
+        assert p.returncode == 1 and b"Nothing to ask" in p.stdout
+    case("27 ask with an empty question: helpful usage message", t_ask_empty)
+
+    def t_uninstall_ask():
+        run(["uninstall"], env=env)
+        assert not (home / ".claude" / "commands" / "ask-antigravity.md").exists()
+    case("28 uninstall also removes /ask-antigravity", t_uninstall_ask)
+
     passed = sum(1 for r in RESULTS if r[1])
     print(f"\n{passed}/{len(RESULTS)} tests passed")
     print("ALL TESTS PASSED" if passed == len(RESULTS) else "SOME TESTS FAILED")

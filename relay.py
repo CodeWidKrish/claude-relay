@@ -14,6 +14,7 @@ Commands
   relay.py on-limit               used by Claude Code's StopFailure hook (JSON on stdin)
   relay.py handoff [--launch]     manual switch: write the handoff (and open Antigravity)
   relay.py launch                 open Antigravity on the existing handoff
+  relay.py ask "question" | --file F   ask Antigravity from inside a Claude Code session
   relay.py back [--launch]        after the reset: hand the work back to Claude Code
   relay.py simulate [--live]      demo the automatic switch without using up your limit
   relay.py status                 show last known usage, mode and log
@@ -37,7 +38,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.1.1"
+VERSION = "1.2.1"
 IS_WIN = platform.system() == "Windows"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
@@ -433,6 +434,82 @@ def cmd_launch(args):
     open_in_new_terminal(antigravity_command(cfg), args.cwd or os.getcwd(), cfg)
 
 
+ASK_DIR = "answers"
+ASK_TIMEOUT = 600  # seconds
+
+
+def run_antigravity_headless(cfg, prompt, cwd, allow_edits=False, timeout=ASK_TIMEOUT):
+    """Run `agy -p` (headless: one prompt, print the answer, exit). Returns (ok, text)."""
+    exe = shutil.which(cfg["target_cmd"])
+    if not exe:
+        return False, (f"'{cfg['target_cmd']}' (Antigravity CLI) was not found on PATH. "
+                       "Install it, sign in once by running `agy`, then try again.")
+    argv = [exe]
+    if cfg.get("target_model"):
+        argv += ["--model", cfg["target_model"]]
+    # plan mode = Antigravity may read the project but not change files (safe default)
+    via_cmd = IS_WIN and exe.lower().endswith((".cmd", ".bat"))
+    if via_cmd or (IS_WIN and "\n" in prompt) or os.environ.get("RELAY_PROMPT_FILE") == "1":
+        # cmd.exe cuts arguments at line breaks and expands % ^ & |, so a long/multi-line request is
+        # written to a file and Antigravity gets a short single-line instruction to read it.
+        pf = Path(cwd) / HANDOFF_DIR / "ask-prompt.md"
+        pf.parent.mkdir(parents=True, exist_ok=True)
+        pf.write_text(prompt, encoding="utf-8")
+        prompt = ("Read the file .relay/ask-prompt.md in this folder and do exactly what it asks. "
+                  "Reply with the answer only.")
+    argv += ["--mode", "accept-edits" if allow_edits else "plan", "-p", prompt]
+    if via_cmd:
+        argv = ["cmd.exe", "/c"] + argv
+    try:
+        r = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return False, f"Antigravity did not answer within {timeout} seconds."
+    except Exception as e:
+        return False, f"Could not run Antigravity: {e}"
+    out = (r.stdout or "").strip()
+    if r.returncode != 0 and not out:
+        return False, f"Antigravity exited with code {r.returncode}: {(r.stderr or '').strip()[:1500]}"
+    return True, out or "(Antigravity returned an empty answer)"
+
+
+def cmd_ask(args):
+    """Use Antigravity from inside a Claude Code session: send a question/sub-task, print the answer."""
+    cfg, cwd = config(), Path(args.cwd or os.getcwd()).resolve()
+    question = args.question or ""
+    if args.file:
+        try:
+            question = Path(args.file).read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            print(f"Could not read {args.file}: {e}")
+            sys.exit(1)
+    question = question.strip()
+    if not question:
+        print('Nothing to ask. Usage: relay.py ask "your question"  or  relay.py ask --file question.md')
+        sys.exit(1)
+    prompt = ("You are helping another coding agent (Claude Code) that is working in this project folder. "
+              + ("" if args.allow_edits else "Do not modify any files; answer only. ")
+              + "Answer the request below clearly and concisely.\n\nREQUEST:\n" + question)
+    if cfg.get("dry_run"):
+        print(f"[dry-run] would run Antigravity headless in {cwd} with: {question[:200]}")
+        return
+    print(f"Asking Antigravity ({'may edit files' if args.allow_edits else 'read-only'})...", file=sys.stderr)
+    ok, answer = run_antigravity_headless(cfg, prompt, cwd, args.allow_edits, args.timeout)
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = cwd / HANDOFF_DIR / ASK_DIR / f"{stamp}.md"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(f"# Question to Antigravity ({stamp})\n\n{question}\n\n# Answer\n\n{answer}\n", encoding="utf-8")
+    except OSError:
+        out = None
+    log(f"ask: ok={ok} saved={out}")
+    print(answer)
+    if out:
+        print(f"\n[saved to {out}]")
+    if not ok:
+        sys.exit(2)
+
+
 def cmd_back(args):
     cfg, cwd = config(), Path(args.cwd or os.getcwd())
     handoff = cwd / HANDOFF_DIR / HANDOFF_NAME
@@ -502,6 +579,8 @@ def cmd_doctor(_args):
     check("StopFailure hook installed", "relay.py" in json.dumps(s.get("hooks", {}).get("StopFailure", [])),
           "Run: relay.py install")
     check("/handoff command installed", (CLAUDE_DIR / "commands" / "handoff.md").exists(), "Run: relay.py install")
+    check("/ask-antigravity command installed", (CLAUDE_DIR / "commands" / "ask-antigravity.md").exists(),
+          "Run: relay.py install")
     st = load_json(STATE_FILE, {})
     if st.get("five_hour_pct") is not None:
         print(f"\n  Last seen 5-hour usage: {st['five_hour_pct']:.0f}% (resets {fmt_time(st.get('resets_at'))})")
@@ -570,8 +649,18 @@ def cmd_install(args):
         "(max 8 bullets): what is done, what is in progress, the exact next step, and any gotchas.\n"
         f"3. Run with the Bash tool: {run('launch')}\n"
         "4. Tell me the work is now open in Antigravity.\n", encoding="utf-8")
+    (cmd_dir / "ask-antigravity.md").write_text(
+        "---\ndescription: Ask Google Antigravity a question or give it a sub-task, without leaving this session\n"
+        "argument-hint: <question or sub-task>\n---\n"
+        "Use Google Antigravity as a second opinion / helper, then continue here.\n"
+        "Request: $ARGUMENTS\n\n"
+        "1. Write the request above to `.relay/ask.md` with the Write tool. Add any short context Antigravity needs "
+        "(relevant file paths, what you already tried). If the request is empty, ask me what to send.\n"
+        f"2. Run with the Bash tool (timeout 600000 ms): {run('ask --file .relay/ask.md')}\n"
+        "3. Read Antigravity's answer, tell me the key points in a few lines, and say whether you agree. "
+        "Do not apply any change it suggests until I confirm.\n", encoding="utf-8")
     print(f"Installed Claude Relay {VERSION}. Mode: {cfg['mode']}, handoff prepared at {cfg['prepare_at']}%.")
-    print(f"  Claude settings : {CLAUDE_SETTINGS}\n  Slash command   : /handoff\n  Relay config    : {CONFIG_FILE}")
+    print(f"  Claude settings : {CLAUDE_SETTINGS}\n  Slash commands  : /handoff, /ask-antigravity\n  Relay config    : {CONFIG_FILE}")
     print("Restart Claude Code, then run: relay.py doctor")
 
 
@@ -589,10 +678,11 @@ def cmd_uninstall(_args):
         if not hooks["StopFailure"]:
             hooks.pop("StopFailure")
     save_json(CLAUDE_SETTINGS, settings)
-    try:
-        (CLAUDE_DIR / "commands" / "handoff.md").unlink()
-    except FileNotFoundError:
-        pass
+    for name in ("handoff.md", "ask-antigravity.md"):
+        try:
+            (CLAUDE_DIR / "commands" / name).unlink()
+        except FileNotFoundError:
+            pass
     print("Claude Relay removed from Claude Code. Restart Claude Code.")
 
 
@@ -608,11 +698,14 @@ def main(argv=None):
     h = sub.add_parser("handoff"); h.add_argument("--launch", action="store_true")
     h.add_argument("--cwd"); h.add_argument("--transcript")
     l = sub.add_parser("launch"); l.add_argument("--cwd")
+    a = sub.add_parser("ask"); a.add_argument("question", nargs="?"); a.add_argument("--file")
+    a.add_argument("--cwd"); a.add_argument("--allow-edits", action="store_true")
+    a.add_argument("--timeout", type=int, default=ASK_TIMEOUT)
     b = sub.add_parser("back"); b.add_argument("--launch", action="store_true"); b.add_argument("--cwd")
     s = sub.add_parser("simulate"); s.add_argument("--live", action="store_true"); s.add_argument("--cwd")
     args = p.parse_args(argv)
     {"install": cmd_install, "uninstall": cmd_uninstall, "statusline": cmd_statusline, "on-limit": cmd_on_limit,
-     "status": cmd_status, "doctor": cmd_doctor, "handoff": cmd_handoff, "launch": cmd_launch,
+     "status": cmd_status, "doctor": cmd_doctor, "handoff": cmd_handoff, "launch": cmd_launch, "ask": cmd_ask,
      "back": cmd_back, "simulate": cmd_simulate}[args.cmd](args)
 
 

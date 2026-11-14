@@ -21,6 +21,13 @@ Claude Relay test suite
   PASS  19 'doctor' reports the setup
   PASS  20 broken Claude settings file is never overwritten
   PASS  21 uninstall removes Relay and keeps other settings
+  PASS  22 install adds /ask-antigravity; doctor checks it
+  PASS  23 ask: Antigravity answers inside the session (read-only), answer saved
+  PASS  24 ask --file with Unicode + --allow-edits
+  PASS  25 ask on Windows .cmd launchers: multi-line request + % & ^ arrive intact
+  PASS  26 ask without Antigravity installed: clear error, exit code 2
+  PASS  27 ask with an empty question: helpful usage message
+  PASS  28 uninstall also removes /ask-antigravity
 
-21/21 tests passed
+28/28 tests passed
 ALL TESTS PASSED
