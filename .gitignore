@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.relay/
+.claude-relay/
+.DS_Store
+Thumbs.db

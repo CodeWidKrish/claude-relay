@@ -1,0 +1,26 @@
+Claude Relay test suite
+
+  PASS  1  install adds status line, StopFailure hook and /handoff
+  PASS  2  re-install keeps user settings and adds no duplicate hooks
+  PASS  3  status line at 45%: green bar, no handoff yet
+  PASS  4  status line before first message (no rate_limits): no crash
+  PASS  5  status line with broken JSON input: no crash
+  PASS  6  Windows cp1252 console: bar characters do not crash
+  PASS  7  status line at 92%: red bar + handoff prepared in advance
+  PASS  8  resets_at as milliseconds or ISO text: handled
+  PASS  9  StopFailure for a non-limit error (auth): ignored
+  PASS  10 limit reached: handoff with full context + Antigravity opened
+  PASS  11 StopFailure fires again for the same limit: no second window
+  PASS  12 rebuilding the handoff keeps Antigravity's progress notes
+  PASS  13 manual switch (/handoff): handoff + Antigravity opened
+  PASS  14 optional Claude model inside Antigravity is passed to agy
+  PASS  15 switch back after reset: Claude Code opened with the progress
+  PASS  16 project with no transcript: handoff still created
+  PASS  17 Antigravity not installed: clear message with the exact command
+  PASS  18 'simulate' demo mode works without using the real limit
+  PASS  19 'doctor' reports the setup
+  PASS  20 broken Claude settings file is never overwritten
+  PASS  21 uninstall removes Relay and keeps other settings
+
+21/21 tests passed
+ALL TESTS PASSED
