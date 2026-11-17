@@ -256,19 +256,34 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 
 ## 📸 Screenshots
 
-<table>
-<tr>
-<td width="50%" align="center"><b>🎬 Demo: the limit is hit, work moves to Antigravity</b><br><br><img src="docs/images/demo-simulate.png" alt="Simulate demo"></td>
-<td width="50%" align="center"><b>🚀 Antigravity opened automatically on Windows 11</b><br><br><img src="docs/images/windows-antigravity-opened.png" alt="Antigravity opened on Windows"></td>
-</tr>
-<tr>
-<td width="50%" align="center"><b>📝 The generated handoff file</b><br><br><img src="docs/images/handoff-file.png" alt="Handoff file"></td>
-<td width="50%" align="center"><b>⚙️ What <code>install</code> adds to Claude Code</b><br><br><img src="docs/images/claude-settings.png" alt="Claude settings"></td>
-</tr>
-<tr>
-<td colspan="2" align="center"><b>Original v1.2.1 test screenshot</b><br><br><img src="docs/images/tests-passed.png" alt="Tests passing" width="70%"></td>
-</tr>
-</table>
+### Isolated handoff demo
+
+Run `python relay.py simulate` to see the threshold and limit hook execute with temporary state. The capture shows a simulated launch and the cleanup message.
+
+![Claude Relay v1.4.2 dry run showing the 92% checkpoint threshold, simulated Antigravity launch, and temporary checkpoint cleanup](docs/images/v1.4.2-simulation.png)
+
+### Preview a checkpoint
+
+Use `python relay.py preview --session SESSION_ID` to inspect what Antigravity will read. This example uses a synthetic transcript.
+
+![Checkpoint preview showing the source session, recent requests, agent progress, and remaining tasks](docs/images/v1.4.2-checkpoint.png)
+
+### Test results
+
+The local run covers **40 scenarios**. The [v1.4.2 GitHub Actions run](https://github.com/CodeWidKrish/claude-relay/actions/runs/44018168856) passed on Windows, macOS, and Linux, including Python 3.8 compatibility on Ubuntu.
+
+![Terminal output showing 28 bundled tests and 12 regression tests passing](docs/images/v1.4.2-tests.png)
+
+<details>
+<summary>Historical v1.2.1 screenshots</summary>
+
+- [Antigravity opened on Windows 11](docs/images/windows-antigravity-opened.png)
+- [Claude Code settings after installation](docs/images/claude-settings.png)
+- [Original simulation](docs/images/demo-simulate.png)
+- [Original handoff file](docs/images/handoff-file.png)
+- [Original test run](docs/images/tests-passed.png)
+
+</details>
 
 ## ✅ Tested conditions
 
