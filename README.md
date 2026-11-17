@@ -6,8 +6,8 @@
 
 <br>
 
-<a href="#-quick-start"><img src="https://img.shields.io/badge/version-1.4.2-ff8a4c?style=for-the-badge" alt="Version 1.4.2"></a>
-<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-40%20scenarios-2ea043?style=for-the-badge&logo=githubactions&logoColor=white" alt="40 test scenarios"></a>
+<a href="#-quick-start"><img src="https://img.shields.io/badge/version-1.4.3-ff8a4c?style=for-the-badge" alt="Version 1.4.3"></a>
+<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-47%20scenarios-2ea043?style=for-the-badge&logo=githubactions&logoColor=white" alt="47 test scenarios"></a>
 <img src="https://img.shields.io/badge/python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
 <img src="https://img.shields.io/badge/dependencies-zero-8957e5?style=for-the-badge" alt="Zero dependencies">
 <br>
@@ -19,7 +19,7 @@
 <br><br>
 
 **[🚀 Quick start](#-quick-start)** &nbsp;•&nbsp;
-**[v1.4.2](#whats-new-in-v142)** &nbsp;•&nbsp;
+**[v1.4.3](#whats-new-in-v143)** &nbsp;•&nbsp;
 **[🧠 How it works](#-how-it-works)** &nbsp;•&nbsp;
 **[🛠 Commands](#-commands)** &nbsp;•&nbsp;
 **[📸 Screenshots](#-screenshots)** &nbsp;•&nbsp;
@@ -29,6 +29,21 @@
 </div>
 
 <br>
+
+## What's new in v1.4.3
+
+A live run against the real Antigravity CLI found one silent failure. This release fixes it and tightens the rough edges found in a code review.
+
+| | Change | Why it matters |
+|:-:|---|---|
+| 🩹 | **`/ask-antigravity` no longer returns a silent empty answer.** Relay tells Antigravity to read files with its file tools, and an empty reply is now an error that includes Antigravity's reason. | In headless plan mode, `agy` auto-denies shell commands. It then exited with code 0 and printed nothing, and Relay reported that as success. |
+| 🔒 | **`.relay/` ignores itself in git.** The first write creates `.relay/.gitignore` containing `*`. Your own `.gitignore` is never touched. | Checkpoints and answers contain your prompts, commands and paths. They can no longer be committed by accident. |
+| 🧭 | **The handoff instructions point at real sections.** Step 2 now says *Continue from 'Last recorded agent update' and the task list*. | It used to name a heading that did not exist. |
+| 🆔 | **Unexpanded `${CLAUDE_SESSION_ID}` is ignored** with a warning. Relay falls back to the manual checkpoint. | A placeholder that was never filled in no longer creates a bogus session folder. |
+| ⏱ | **Early checkpoints work without a reset time.** If Claude Code sends no `resets_at`, Relay prepares once per 5-hour window. | Before, it prepared only once per session, ever. |
+| 🔓 | **Session locks are always released**, even after an error, on Windows and Unix. | Prevents a stuck lock from delaying the next hook. |
+| 🩺 | **`doctor` warns about install paths** with spaces or inside OneDrive. **`back` names the exact checkpoint** it looked for. | Clearer setup and error messages. |
+| 🧪 | **47 tests**, up from 40. They no longer change result when `RELAY_HOME`, `RELAY_DRY_RUN` or `CLAUDE_CONFIG_DIR` is set in your shell. | Reliable local runs. |
 
 ## What's new in v1.4.2
 
@@ -256,26 +271,56 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 
 ## 📸 Screenshots
 
-### Isolated handoff demo
+All v1.4.3 captures are real output from `relay.py` on Windows 11, with Claude Code 2.1.221 and Antigravity CLI 1.5.10. The demo project is synthetic. Relay ran with a temporary `CLAUDE_CONFIG_DIR` and `RELAY_HOME`, so no real account settings were used. The home folder is shortened to `%TEMP%` and `…`. The launch steps are dry runs, which print the exact command instead of opening a window. The `/ask-antigravity` answer is a live response from Antigravity.
 
-Run `python relay.py simulate` to see the threshold and limit hook execute with temporary state. The capture shows a simulated launch and the cleanup message.
+### 1. Check your setup
 
-![Claude Relay v1.4.2 dry run showing the 92% checkpoint threshold, simulated Antigravity launch, and temporary checkpoint cleanup](docs/images/v1.4.2-simulation.png)
+`python relay.py doctor` confirms both CLIs, git, the status line, the hook and both slash commands.
 
-### Preview a checkpoint
+![relay.py doctor on Windows 11: Python, Claude Code 2.1.221, Antigravity CLI 1.5.10 and git found; status line, StopFailure hook, /handoff and /ask-antigravity installed; All good](docs/images/v1.4.3-doctor.png)
 
-Use `python relay.py preview --session SESSION_ID` to inspect what Antigravity will read. This example uses a synthetic transcript.
+### 2. From the usage bar to the automatic switch
 
-![Checkpoint preview showing the source session, recent requests, agent progress, and remaining tasks](docs/images/v1.4.2-checkpoint.png)
+The status line turns green, then yellow, then red. At 90% the checkpoint is written early. When Claude Code's `StopFailure` hook reports `rate_limit`, Relay refreshes the checkpoint and opens Antigravity on it.
 
-### Test results
+![Status line at 42%, 84% and 93% with the /handoff hint, then the StopFailure hook requesting agy -i with the session checkpoint](docs/images/v1.4.3-auto-switch.png)
 
-The local run covers **40 scenarios**. The [v1.4.2 GitHub Actions run](https://github.com/CodeWidKrish/claude-relay/actions/runs/44018168856) passed on Windows, macOS, and Linux, including Python 3.8 compatibility on Ubuntu.
+### 3. What Antigravity reads
 
-![Terminal output showing 28 bundled tests and 12 regression tests passing](docs/images/v1.4.2-tests.png)
+`checkpoints` lists the saved sessions. `preview` shows the exact handoff: the goal, recent requests, last update, task list, changed files, commands, git state and instructions.
+
+![relay.py checkpoints and preview showing a full handoff file for a FastAPI smart-lights task](docs/images/v1.4.3-checkpoint.png)
+
+### 4. Ask Antigravity without leaving Claude
+
+`/ask-antigravity` runs `relay.py ask` in read-only plan mode. Antigravity reads the project and answers, and the answer is saved under `.relay/answers/`.
+
+![relay.py ask returning a live three-point review from Antigravity in plan mode, saved to .relay/answers](docs/images/v1.4.3-ask-antigravity.png)
+
+### 5. Hand the work back to Claude Code
+
+After the reset, `back --launch` stamps the checkpoint and starts Claude Code on it.
+
+![relay.py back --launch updating the checkpoint and requesting claude with a prompt to read Progress since handoff](docs/images/v1.4.3-back.png)
+
+### 6. Checkpoints never reach git
+
+Relay writes `.relay/.gitignore` the first time it saves anything, so `git status` shows only your own changes.
+
+![git status listing only app.py and routes.py, and git check-ignore showing .relay/.gitignore ignoring .relay/sessions](docs/images/v1.4.3-gitignore.png)
+
+### 7. Test results
+
+Both suites run in temporary folders with a fake `agy`, so they never touch your real Claude settings.
+
+![28 end-to-end tests and 19 regression tests passing](docs/images/v1.4.3-tests.png)
 
 <details>
-<summary>Historical v1.2.1 screenshots</summary>
+<summary>Earlier screenshots (v1.4.2 and v1.2.1)</summary>
+
+- [v1.4.2 simulation](docs/images/v1.4.2-simulation.png)
+- [v1.4.2 checkpoint preview](docs/images/v1.4.2-checkpoint.png)
+- [v1.4.2 test run](docs/images/v1.4.2-tests.png)
 
 - [Antigravity opened on Windows 11](docs/images/windows-antigravity-opened.png)
 - [Claude Code settings after installation](docs/images/claude-settings.png)
@@ -287,7 +332,7 @@ The local run covers **40 scenarios**. The [v1.4.2 GitHub Actions run](https://g
 
 ## ✅ Tested conditions
 
-Run both test scripts for **40 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers.
+Run both test scripts for **47 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers.
 
 <details>
 <summary><b>🧪 Show all edge cases covered</b></summary>
@@ -309,11 +354,17 @@ Run both test scripts for **40 scenarios**. The tests simulate Claude hook paylo
 | `resets_at` as seconds, milliseconds or ISO text | All handled |
 | `/ask-antigravity` with Unicode, an empty question, or `agy` missing | Answer, usage message, or clear error (exit code 2) |
 | `agy` installed as a Windows `.cmd` launcher | Multi-line requests and `% & ^` are passed through a file, so nothing is cut off |
+| Headless `agy` exits 0 with no answer (a tool was auto-denied) | Reported as a failure with Antigravity's reason (exit code 2) |
+| Checkpoint or answer written to a git project | `.relay/.gitignore` is created, so nothing is committed |
+| `/handoff` runs with an unexpanded `${CLAUDE_SESSION_ID}` | Ignored with a warning; the manual checkpoint is used |
+| Usage data without `resets_at` | The early checkpoint is prepared once per 5-hour window |
+| An error inside a locked section | The session lock is still released |
+| `RELAY_*` or `CLAUDE_CONFIG_DIR` set in your shell | The tests still use only temporary folders |
 
 </details>
 
 > [!NOTE]
-> **Historical v1.2.1 live check** Windows 11 with Python 3.14, Claude Code 2.1.221 and Antigravity CLI 1.5.9. The v1.4 test workflow runs simulated tests on Windows, macOS and Linux. Live v1.4 CLI behavior needs a signed-in smoke test.
+> **v1.4.3 live check:** Windows 11, Python 3.14, Claude Code 2.1.221 and Antigravity CLI 1.5.10. `doctor` and a live `ask` call to Antigravity were run against the real CLIs. The automatic switch and the return trip were run as dry runs, so the full signed-in round trip still needs the smoke test below. CI runs the simulated suite on Windows, macOS and Linux.
 
 ## 🧯 Troubleshooting
 
@@ -368,7 +419,7 @@ Run both test scripts for **40 scenarios**. The tests simulate Claude hook paylo
 ## v1.4 workflow
 
 1. Run `python relay.py checkpoints` to see available session IDs. If multiple checkpoints exist, pass `--session ID` to select one. Use `--session manual` for the unsuffixed manual checkpoint.
-2. Run `python relay.py preview --session ID` to inspect the checkpoint before sharing it. It may contain source prompts, command text, paths, and Git state. Add `.relay/` to the target project's ignore rules before using Relay there.
+2. Run `python relay.py preview --session ID` to inspect the checkpoint before sharing it. It may contain source prompts, command text, paths, and Git state. Relay creates `.relay/.gitignore` so this folder stays out of git. Keep that file if you edit the folder.
 3. Run `python relay.py launch --session ID` to retry a failed launch or open a saved checkpoint. A launch request means Relay asked the terminal to start Antigravity. The terminal shows sign-in, model, and startup errors.
 4. Use `python relay.py back --launch --session ID` for a new Claude conversation with the checkpoint. Add `--resume` to request the original Claude conversation when the installed CLI advertises `--resume`. Relay reports unsupported resume so you can choose the new-session command.
 5. Run `python relay.py purge-answers --older-than-days 30` to delete old answer files. Review retained checkpoints separately. Relay removes its temporary prompt files after a headless call.
@@ -413,6 +464,7 @@ claude-relay/
 ├── relay.py                  # the whole tool (standard library only)
 ├── tests/
 │   ├── test_relay.py         # 28 end-to-end and edge-case tests
+│   ├── test_regressions.py   # 19 regression tests (sessions, locks, installs, ask)
 │   └── sample_output.txt
 ├── docs/
 │   ├── assets/               # animated banner, meter and footer (SVG)

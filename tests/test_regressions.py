@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -33,6 +34,12 @@ class RelayRegressions(unittest.TestCase):
                                CLAUDE_PROJECTS=claude / "projects")
         paths.start()
         self.addCleanup(paths.stop)
+        # Relay settings exported in the developer's shell must not change test results.
+        clean = {k: v for k, v in os.environ.items()
+                 if k not in ("RELAY_DRY_RUN", "RELAY_HOME", "RELAY_PROMPT_FILE", "CLAUDE_CONFIG_DIR", "NO_COLOR")}
+        environ = patch.dict(os.environ, clean, clear=True)
+        environ.start()
+        self.addCleanup(environ.stop)
 
     def transcript(self, project, session, text):
         path = relay.project_dir_for(project) / (session + ".jsonl")
@@ -131,6 +138,28 @@ class RelayRegressions(unittest.TestCase):
         self.assertIn("Partial output", answer)
         self.assertIn("CLI error", answer)
 
+    def test_empty_headless_answer_is_a_failure_with_the_reason(self):
+        denied = "no output produced - a tool required the \"command\" permission that headless mode cannot prompt for"
+        result = subprocess.CompletedProcess([], 0, "", denied)
+        with patch.object(relay.shutil, "which", return_value="agy.exe"), patch.object(
+                relay.subprocess, "run", return_value=result) as run:
+            ok, answer = relay.run_antigravity_headless(relay.DEFAULT_CONFIG, "Question", self.project)
+        self.assertFalse(ok)
+        self.assertIn("empty answer", answer)
+        self.assertIn("headless mode cannot prompt", answer)
+        self.assertEqual(run.call_args.args[0][1:4], ["--mode", "plan", "-p"])
+
+    def test_ask_prompt_steers_away_from_unapprovable_shell_commands(self):
+        args = argparse.Namespace(question="Review app.py", file=None, cwd=str(self.project), allow_edits=False,
+                                  timeout=5)
+        with patch.object(relay, "run_antigravity_headless", return_value=(True, "Fine")) as headless, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            relay.cmd_ask(args)
+        prompt = headless.call_args.args[1]
+        self.assertIn("file-reading tools", prompt)
+        self.assertIn("Do not modify any files", prompt)
+        self.assertTrue((self.project / ".relay" / ".gitignore").is_file())
+
     def test_back_launch_canonicalizes_workspace_path(self):
         relay.build_handoff(self.project, session="original")
         alternate_path = self.project / ".." / self.project.name
@@ -185,6 +214,57 @@ class RelayRegressions(unittest.TestCase):
         result.stdout = "Usage: claude"
         with patch.object(relay.subprocess, "run", return_value=result), self.assertRaises(ValueError):
             relay.ClaudeCode.resume_command("original")
+
+    def test_relay_folder_ignores_itself_in_git(self):
+        path = relay.build_handoff(self.project, session="private")
+        ignore = self.project / ".relay" / ".gitignore"
+        self.assertTrue(path.is_file())
+        self.assertEqual(ignore.read_text(encoding="utf-8").splitlines()[-1], "*")
+        ignore.write_text("custom\n", encoding="utf-8")
+        relay.build_handoff(self.project, session="private")
+        self.assertEqual(ignore.read_text(encoding="utf-8"), "custom\n")
+
+    def test_handoff_instructions_name_existing_sections(self):
+        text = relay.build_handoff(self.project, session="headings").read_text(encoding="utf-8")
+        steps = text.split("## Instructions for the next agent", 1)[1]
+        for quoted in ("Last recorded agent update", "Progress since handoff"):
+            self.assertIn(quoted, steps)
+            self.assertIn("## " + quoted, text)
+
+    def test_unexpanded_session_placeholder_is_ignored(self):
+        self.assertIsNone(relay.clean_session("${CLAUDE_SESSION_ID}"))
+        self.assertIsNone(relay.clean_session("$CLAUDE_SESSION_ID"))
+        self.assertEqual(relay.clean_session("abc-123"), "abc-123")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            relay.main(["handoff", "--cwd", str(self.project), "--session", "${CLAUDE_SESSION_ID}"])
+        self.assertIn("unexpanded session ID", err.getvalue())
+        self.assertTrue((self.project / ".relay" / "HANDOFF.md").is_file())
+        self.assertFalse((self.project / ".relay" / "sessions").exists())
+
+    def test_unknown_reset_prepares_again_in_a_new_window(self):
+        payload = {"session_id": "window", "workspace": {"current_dir": str(self.project)},
+                   "rate_limits": {"five_hour": {"used_percentage": 95}}}
+        path = relay.checkpoint(self.project, "window")
+        with patch.object(relay, "read_stdin_json", return_value=payload), \
+                contextlib.redirect_stdout(io.StringIO()):
+            relay.cmd_statusline(None)
+            self.assertTrue(path.is_file())
+            path.unlink()
+            relay.cmd_statusline(None)
+            self.assertFalse(path.exists(), "same window must not rebuild the checkpoint")
+            later = time.time() + 5 * 3600
+            with patch.object(relay.time, "time", return_value=later):
+                relay.cmd_statusline(None)
+        self.assertTrue(path.is_file(), "a new 5-hour window must prepare a fresh checkpoint")
+
+    def test_session_lock_is_released_after_an_error(self):
+        with self.assertRaises(RuntimeError):
+            with relay.session_state(self.project, "lock"):
+                raise RuntimeError("boom")
+        with relay.session_state(self.project, "lock") as state:
+            state["ok"] = True
+        with relay.session_state(self.project, "lock") as state:
+            self.assertTrue(state["ok"])
 
 
 if __name__ == "__main__":

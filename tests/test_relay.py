@@ -44,7 +44,8 @@ def setup():
     project.mkdir(parents=True)
     (project / "app.py").write_text("print('hello')\n")
     env = dict(os.environ, HOME=str(home), USERPROFILE=str(home), RELAY_DRY_RUN="1", PROJECT=str(project))
-    env.pop("CLAUDE_CONFIG_DIR", None)
+    for name in ("CLAUDE_CONFIG_DIR", "RELAY_HOME", "RELAY_PROMPT_FILE", "NO_COLOR"):
+        env.pop(name, None)
     key = "".join(c if c.isalnum() else "-" for c in str(project.resolve()))
     tdir = home / ".claude" / "projects" / key
     tdir.mkdir(parents=True)

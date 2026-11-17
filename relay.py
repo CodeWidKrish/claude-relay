@@ -43,7 +43,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 IS_WIN = platform.system() == "Windows"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
@@ -114,9 +114,23 @@ def session_state(cwd, session):
         else:
             import fcntl
             fcntl.flock(lock, fcntl.LOCK_EX)
-        state = load_json(path, {})
-        yield state
-        save_json(path, state)
+        try:
+            state = load_json(path, {})
+            yield state
+            save_json(path, state)
+        finally:
+            if IS_WIN:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def clean_session(value):
+    """A slash command whose ${CLAUDE_SESSION_ID} was not substituted must not become a bogus session."""
+    if not value or "${" in value or value.startswith("$"):
+        return None
+    return value
 
 
 def config():
@@ -303,6 +317,20 @@ def git_summary(cwd):
 
 
 # ------------------------------------------------------------------- handoff file
+RELAY_GITIGNORE = ("# Created by Claude Relay. Checkpoints and answers can contain prompts, commands and paths,\n"
+                   "# so this folder is never committed.\n*\n")
+
+
+def relay_folder(cwd):
+    """Create <project>/.relay with its own .gitignore, so nothing Relay writes can be committed by accident."""
+    folder = Path(cwd).resolve() / HANDOFF_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    ignore = folder / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text(RELAY_GITIGNORE, encoding="utf-8")
+    return folder
+
+
 def checkpoint(cwd, session=None):
     folder = Path(cwd).resolve() / HANDOFF_DIR
     if session:
@@ -350,9 +378,10 @@ def build_handoff(cwd, transcript=None, reason="manual", resets_at=None, session
         L += ["", "## Git state", "```", g, "```"]
     L += ["", "## Instructions for the next agent",
           "1. Read this file and the files listed above before changing anything.",
-          "2. Continue from 'Where the previous agent stopped'. Do not redo finished work.",
+          "2. Continue from 'Last recorded agent update' and the task list. Do not redo finished work.",
           "3. As you work, add short notes to 'Progress since handoff' below, so the work can move back.",
           "", "## Progress since handoff", keep_notes or "- (next agent: add notes here)", ""]
+    relay_folder(cwd)
     save_text(out, "\n".join(L))
     log(f"handoff written: {out} (reason={reason}, transcript={transcript})")
     return out
@@ -449,11 +478,12 @@ def cmd_statusline(_args):
         if pct is not None:
             save_json(STATE_FILE, {"five_hour_pct": pct, "resets_at": resets, "updated": time.time()})
             if pct >= cfg["prepare_at"]:
+                window = resets or "unknown-" + str(int(time.time() // (5 * 3600)))
                 with session_state(cwd, session) as local:
-                    if local.get("prepared_for") != (resets or "unknown"):
+                    if local.get("prepared_for") != window:
                         build_handoff(cwd, transcript, reason=f"5-hour usage at {pct:.0f}%", resets_at=resets,
                                       session=session)
-                        local["prepared_for"] = resets or "unknown"
+                        local["prepared_for"] = window
         if pct is None:
             print(f"{model} | 5h: -- | relay: {cfg['mode']}")
             return
@@ -574,8 +604,7 @@ def run_antigravity_headless(cfg, prompt, cwd, allow_edits=False, timeout=ASK_TI
     if via_cmd or (IS_WIN and "\n" in prompt) or os.environ.get("RELAY_PROMPT_FILE") == "1":
         # cmd.exe cuts arguments at line breaks and expands % ^ & |, so a long/multi-line request is
         # written to a file and Antigravity gets a short single-line instruction to read it.
-        pf = Path(cwd) / HANDOFF_DIR / ("ask-prompt-" + uuid.uuid4().hex + ".md")
-        pf.parent.mkdir(parents=True, exist_ok=True)
+        pf = relay_folder(cwd) / ("ask-prompt-" + uuid.uuid4().hex + ".md")
         pf.write_text(prompt, encoding="utf-8")
         prompt = (f"Read the file .relay/{pf.name} in this folder and do exactly what it asks. "
                   "Reply with the answer only.")
@@ -592,10 +621,13 @@ def run_antigravity_headless(cfg, prompt, cwd, allow_edits=False, timeout=ASK_TI
     finally:
         if pf is not None and pf.exists():
             pf.unlink()
-    out = (r.stdout or "").strip()
+    out, err = (r.stdout or "").strip(), (r.stderr or "").strip()[:1500]
     if r.returncode != 0:
-        return False, f"Antigravity exited with code {r.returncode}: {(r.stderr or '').strip()[:1500]}\n{out}"
-    return True, out or "(Antigravity returned an empty answer)"
+        return False, f"Antigravity exited with code {r.returncode}: {err}\n{out}"
+    if not out:
+        # Headless mode cannot prompt for permissions: a denied tool ends the turn with no answer and exit 0.
+        return False, "Antigravity returned an empty answer." + (f"\n{err}" if err else "")
+    return True, out
 
 
 def cmd_ask(args):
@@ -614,6 +646,7 @@ def cmd_ask(args):
         sys.exit(1)
     prompt = ("You are helping another coding agent (Claude Code) that is working in this project folder. "
               + ("" if args.allow_edits else "Do not modify any files; answer only. ")
+              + "Read files with your file-reading tools: shell commands cannot be approved in this headless run. "
               + "Answer the request below clearly and concisely.\n\nREQUEST:\n" + question)
     if cfg.get("dry_run"):
         print(f"[dry-run] would run Antigravity headless in {cwd} with: {question[:200]}")
@@ -623,6 +656,7 @@ def cmd_ask(args):
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     out = cwd / HANDOFF_DIR / ASK_DIR / f"{stamp}-{uuid.uuid4().hex}.md"
     try:
+        relay_folder(cwd)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(f"# Question to Antigravity ({stamp})\n\n{question}\n\n# Answer\n\n{answer}\n", encoding="utf-8")
     except OSError:
@@ -639,7 +673,7 @@ def cmd_back(args):
     cfg, cwd = config(), Path(args.cwd or os.getcwd()).resolve()
     handoff = selected_checkpoint(cwd, args.session)
     if not handoff.exists():
-        print("No .relay/HANDOFF.md in this folder - nothing to hand back.")
+        print(f"No checkpoint at {handoff} - nothing to hand back. Run relay.py checkpoints to list them.")
         return
     if args.resume and (not args.launch or not args.session or args.session == "manual"):
         raise ValueError("--resume requires --launch and an explicit Claude --session ID.")
@@ -724,6 +758,10 @@ def cmd_doctor(_args):
     check(f"Antigravity CLI ({cfg['target_cmd']}): {agy_version or 'unavailable'}", agy_version,
           "Install the Antigravity CLI, sign in, then run `agy` once")
     check(f"git: {'found' if shutil.which('git') else 'not found (optional)'}", True)
+    here = Path(__file__).resolve().parent
+    if " " in str(here) or "onedrive" in str(here).lower():
+        print(f"  [TIP] Relay lives in {here}\n"
+              "        -> a path without spaces and outside OneDrive (e.g. C:\\claude-relay) makes hooks more robust")
     s = read_settings()
     manifest = load_json(installation_manifest(), {})
     check("Status line installed", manifest and s.get("statusLine") == manifest["status"], "Run: relay.py install")
@@ -904,6 +942,9 @@ def main(argv=None):
     cleanup.add_argument("--cwd")
     cleanup.add_argument("--older-than-days", type=int, required=True)
     args = p.parse_args(argv)
+    if getattr(args, "session", None) and clean_session(args.session) is None:
+        print(f"Relay: ignoring unexpanded session ID {args.session!r}.", file=sys.stderr)
+        args.session = None
     try:
         {"install": cmd_install, "uninstall": cmd_uninstall, "statusline": cmd_statusline, "on-limit": cmd_on_limit,
      "status": cmd_status, "doctor": cmd_doctor, "handoff": cmd_handoff, "launch": cmd_launch, "ask": cmd_ask,
