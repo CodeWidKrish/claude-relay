@@ -393,6 +393,13 @@ python relay.py back --launch --session SESSION_ID
 
 Add `--resume` to that command when you want to reopen the original Claude conversation and your installed Claude CLI supports it.
 
+### Live round-trip smoke test
+
+- In a disposable Git project, sign in to both CLIs and run `python relay.py doctor`. Record the operating system and CLI versions.
+- Start a Claude Code session with a small task, then run `/handoff`. Confirm Antigravity opens in the intended workspace, reads the correct checkpoint, and records its progress there.
+- Run `python relay.py checkpoints` to find the source session. Run `python relay.py back --launch --session SESSION_ID --resume` and confirm Claude reopens that conversation and reads Antigravity's progress. If your CLI lacks resume support, omit `--resume` to test the new-session path.
+- To verify automatic handoff, repeat when a real usage-limit event occurs and confirm that one Antigravity window opens for the affected session.
+
 ### Upgrading from v1.2.1
 
 Run `python relay.py install` again. Relay preserves existing slash-command files, including older copies. Use the CLI commands above if a command file is already present. If a workspace has the old `.agents/rules/relay-handoff.md` rule, remove that generated rule after reviewing its contents so it doesn't direct Antigravity to an older checkpoint.
