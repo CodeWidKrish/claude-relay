@@ -6,8 +6,8 @@
 
 <br>
 
-<a href="#-quick-start"><img src="https://img.shields.io/badge/version-1.4.1-ff8a4c?style=for-the-badge" alt="Version 1.4.1"></a>
-<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-37%20scenarios-2ea043?style=for-the-badge&logo=githubactions&logoColor=white" alt="37 test scenarios"></a>
+<a href="#-quick-start"><img src="https://img.shields.io/badge/version-1.4.2-ff8a4c?style=for-the-badge" alt="Version 1.4.2"></a>
+<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-40%20scenarios-2ea043?style=for-the-badge&logo=githubactions&logoColor=white" alt="40 test scenarios"></a>
 <img src="https://img.shields.io/badge/python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
 <img src="https://img.shields.io/badge/dependencies-zero-8957e5?style=for-the-badge" alt="Zero dependencies">
 <br>
@@ -19,7 +19,7 @@
 <br><br>
 
 **[🚀 Quick start](#-quick-start)** &nbsp;•&nbsp;
-**[v1.4.1](#whats-new-in-v141)** &nbsp;•&nbsp;
+**[v1.4.2](#whats-new-in-v142)** &nbsp;•&nbsp;
 **[🧠 How it works](#-how-it-works)** &nbsp;•&nbsp;
 **[🛠 Commands](#-commands)** &nbsp;•&nbsp;
 **[📸 Screenshots](#-screenshots)** &nbsp;•&nbsp;
@@ -29,6 +29,12 @@
 </div>
 
 <br>
+
+## What's new in v1.4.2
+
+- `python relay.py simulate` uses a temporary workspace and temporary Relay state. The demo leaves your real usage reading and project checkpoints alone.
+- Dry-run launches leave the real launch cooldown available for the next limit event.
+- Relay reads transcripts one record at a time, skips malformed records, and keeps the five newest requests, 25 most recently touched files, and eight newest commands.
 
 ## What's new in v1.4.1
 
@@ -209,7 +215,7 @@ python /path/to/claude-relay/relay.py simulate --live   # really opens Antigravi
 | `checkpoints [--cwd DIR]` | Lists checkpoint paths and session IDs |
 | `preview [--cwd DIR] [--session ID]` | Shows what the selected checkpoint contains |
 | `purge-answers --older-than-days N [--cwd DIR]` | Removes saved answers older than N days |
-| `simulate [--live] [--cwd DIR]` | Demo: usage 45% → 85% → 92% → limit hit → switch |
+| `simulate [--live] [--cwd DIR]` | Exercises the usage threshold and limit hook in a temporary workspace by default. `--live` uses the selected workspace and can open Antigravity. |
 | `status` | Shows config, last known usage and recent log lines |
 | `uninstall` | Removes Relay and restores your previous status line |
 | `statusline`, `on-limit` | Called by Claude Code (not by you) |
@@ -266,7 +272,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 
 ## ✅ Tested conditions
 
-Run both test scripts for **37 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers.
+Run both test scripts for **40 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers.
 
 <details>
 <summary><b>🧪 Show all edge cases covered</b></summary>

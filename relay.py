@@ -22,6 +22,7 @@ Commands
 import argparse
 import datetime as dt
 import json
+from collections import OrderedDict, deque
 import contextlib
 import hashlib
 import tempfile
@@ -42,7 +43,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 IS_WIN = platform.system() == "Windows"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
@@ -223,27 +224,35 @@ class ClaudeCode:
 def _text_of(content):
     if isinstance(content, str):
         return content
-    return "\n".join(b.get("text", "") for b in (content or [])
-                     if isinstance(b, dict) and b.get("type") == "text")
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(block["text"] for block in content
+                     if isinstance(block, dict) and block.get("type") == "text"
+                     and isinstance(block.get("text"), str))
+
+
+def transcript_events(path):
+    if not path:
+        return
+    try:
+        with Path(path).open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(event, dict) and not event.get("isMeta") and not event.get("isSidechain"):
+                    yield event
+    except OSError:
+        return
 
 
 def parse_transcript(path):
     info = {"first_request": "", "recent_requests": [], "last_answer": "",
             "files_changed": [], "commands": [], "todos": []}
-    if not path or not Path(path).exists():
-        return info
-    files, cmds = [], []
-    try:
-        lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
-    except Exception:
-        return info
-    for line in lines:
-        try:
-            ev = json.loads(line)
-        except Exception:
-            continue
-        if not isinstance(ev, dict) or ev.get("isMeta") or ev.get("isSidechain"):
-            continue
+    requests, commands = deque(maxlen=5), deque(maxlen=8)
+    files = OrderedDict()
+    for ev in transcript_events(path):
         msg = ev.get("message") if isinstance(ev.get("message"), dict) else {}
         role, content = msg.get("role") or ev.get("type"), msg.get("content")
         if role == "user":
@@ -252,7 +261,7 @@ def parse_transcript(path):
             text = _text_of(content).strip()
             if text and not is_tool_result and not text.startswith("<") and "[Request interrupted" not in text:
                 info["first_request"] = info["first_request"] or text
-                info["recent_requests"].append(text)
+                requests.append(text)
         elif role == "assistant":
             text = _text_of(content).strip()
             if text and not text.startswith("API Error") and "usage limit" not in text.lower():
@@ -260,16 +269,22 @@ def parse_transcript(path):
             for b in content if isinstance(content, list) else []:
                 if not isinstance(b, dict) or b.get("type") != "tool_use":
                     continue
-                name, inp = b.get("name", ""), b.get("input") or {}
-                if name in ("Edit", "Write", "MultiEdit", "NotebookEdit") and inp.get("file_path"):
-                    files.append(inp["file_path"])
-                elif name in ("Bash", "PowerShell") and inp.get("command"):
-                    cmds.append(inp["command"])
+                name, inp = b.get("name"), b.get("input")
+                if not isinstance(inp, dict):
+                    continue
+                file_path, command = inp.get("file_path"), inp.get("command")
+                if name in ("Edit", "Write", "MultiEdit", "NotebookEdit") and isinstance(file_path, str) and file_path:
+                    files[file_path] = None
+                    files.move_to_end(file_path)
+                    if len(files) > 25:
+                        files.popitem(last=False)
+                elif name in ("Bash", "PowerShell") and isinstance(command, str) and command:
+                    commands.append(command)
                 elif name == "TodoWrite" and isinstance(inp.get("todos"), list):
                     info["todos"] = inp["todos"]
-    info["recent_requests"] = info["recent_requests"][-5:]
-    info["files_changed"] = list(dict.fromkeys(files))[-25:]
-    info["commands"] = cmds[-8:]
+    info["recent_requests"] = list(requests)
+    info["files_changed"] = list(files)
+    info["commands"] = list(commands)
     return info
 
 
@@ -469,11 +484,15 @@ def cmd_on_limit(_args):
             msg = "Handoff saved."
             if cfg["mode"] == "auto":
                 if open_in_new_terminal(Antigravity.interactive(cfg, cwd, path), cwd, cfg):
-                    state["last_switch"] = time.time()
-                    msg += " Antigravity launch requested."
+                    if cfg["dry_run"]:
+                        msg += " Dry run: Antigravity launch simulated."
+                    else:
+                        state["last_switch"] = time.time()
+                        msg += " Antigravity launch requested."
                 else:
                     msg += " Antigravity launch failed. Retry with relay.py launch."
-            notify("Claude Relay", msg)
+            if not cfg["dry_run"]:
+                notify("Claude Relay", msg)
             print(json.dumps({"systemMessage": f"Claude Relay: {msg} ({path})"}))
     except Exception as error:
         log(f"on-limit error: {error}")
@@ -644,13 +663,27 @@ def cmd_back(args):
 
 def cmd_simulate(args):
     """Feed Relay exactly what Claude Code sends, so the switch can be shown without using the limit."""
-    cwd = args.cwd or os.getcwd()
+    cwd = Path(args.cwd or os.getcwd()).resolve()
+    if args.live:
+        simulate_hooks(cwd, dict(os.environ))
+        return
+    with tempfile.TemporaryDirectory(prefix="relay-demo-") as temporary:
+        root = Path(temporary)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        state = root / "state"
+        save_json(state / "config.json", {**config(), "mode": "auto", "dry_run": True})
+        env = dict(os.environ, RELAY_HOME=str(state), CLAUDE_CONFIG_DIR=str(root / "claude"),
+                   RELAY_DRY_RUN="1")
+        simulate_hooks(workspace, env)
+    print("Simulation complete. The temporary checkpoint was removed.")
+
+
+def simulate_hooks(cwd, env):
+    cwd = str(cwd)
     session = "relay-demo-" + uuid.uuid4().hex
-    if not args.live:
-        os.environ["RELAY_DRY_RUN"] = "1"
     reset = int(time.time()) + 2 * 3600
     me = [sys.executable, str(Path(__file__).resolve())]
-    env = dict(os.environ)
     for pct in (45, 85, 92):
         payload = {"session_id": session, "model": {"display_name": "Claude Sonnet"}, "workspace": {"current_dir": cwd},
                    "rate_limits": {"five_hour": {"used_percentage": pct, "resets_at": reset}}}

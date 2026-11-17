@@ -154,8 +154,8 @@ def main():
 
     def t_dupe():
         out = run(["on-limit"], hook, env)
-        assert "would open" not in out
-    case("11 StopFailure fires again for the same limit: no second window", t_dupe)
+        assert "launch simulated" in out
+    case("11 repeated dry runs do not consume the real launch cooldown", t_dupe)
 
     def t_notes_kept():
         text = handoff.read_text(encoding="utf-8").replace("- (next agent: add notes here)",

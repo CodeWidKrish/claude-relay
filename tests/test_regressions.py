@@ -69,11 +69,16 @@ class RelayRegressions(unittest.TestCase):
         self.assertIn("Second unique task", relay.checkpoint(self.project, "two").read_text(encoding="utf-8"))
 
     def test_concurrent_hooks_launch_once(self):
-        relay.save_json(relay.CONFIG_FILE, {"mode": "auto", "dry_run": True})
+        relay.save_json(relay.CONFIG_FILE, {"mode": "auto", "target_cmd": sys.executable})
         payload = json.dumps(self.hook(self.project, "parallel"))
         env = dict(os.environ, RELAY_HOME=str(relay.STATE_DIR), CLAUDE_CONFIG_DIR=str(relay.CLAUDE_DIR),
-                   RELAY_DRY_RUN="1")
-        command = [sys.executable, str(Path(relay.__file__).resolve()), "on-limit"]
+                   RELAY_DRY_RUN="0")
+        script = (
+            "import sys; sys.path.insert(0, sys.argv[1]); import relay; "
+            "relay.open_in_new_terminal = lambda *args: True; relay.notify = lambda *args: None; "
+            "relay.main(['on-limit'])"
+        )
+        command = [sys.executable, "-c", script, str(Path(relay.__file__).resolve().parent)]
         with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env) as first:
             with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env) as second:
                 first.stdin.write(payload.encode())
@@ -136,6 +141,42 @@ class RelayRegressions(unittest.TestCase):
         command, cwd, _ = launcher.call_args.args
         self.assertEqual(cwd, self.project.resolve())
         self.assertIn(".relay/sessions/", command[-1])
+
+    def test_dry_run_leaves_real_cooldown_available(self):
+        payload = self.hook(self.project, "dry")
+        relay.save_json(relay.CONFIG_FILE, {"dry_run": True})
+        with patch.object(relay, "open_in_new_terminal", return_value=True):
+            self.assertIn("launch simulated", self.fire(payload))
+            relay.save_json(relay.CONFIG_FILE, {"dry_run": False})
+            self.assertIn("launch requested", self.fire(payload))
+
+    def test_simulate_does_not_touch_project_or_account_state(self):
+        relay.save_json(relay.STATE_FILE, {"five_hour_pct": 42})
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_simulate(argparse.Namespace(cwd=str(self.project), live=False))
+        self.assertIn("launch simulated", output.getvalue())
+        self.assertIn("temporary checkpoint was removed", output.getvalue())
+        self.assertFalse((self.project / ".relay").exists())
+        self.assertEqual(relay.load_json(relay.STATE_FILE, {}), {"five_hour_pct": 42})
+
+    def test_streaming_transcript_skips_malformed_records_and_bounds_history(self):
+        transcript = self.project / "transcript.jsonl"
+        events = ['{ broken', json.dumps({"type": "user", "message": {"content": 42}})]
+        for number in range(35):
+            events.append(json.dumps({"type": "user", "message": {"content": f"Request {number}"}}))
+            events.append(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": None},
+                {"type": "tool_use", "name": "Edit", "input": {"file_path": f"file-{number}"}},
+                {"type": "tool_use", "name": "Bash", "input": {"command": f"command {number}"}},
+                {"type": "tool_use", "name": "Bash", "input": ["invalid"]},
+            ]}}))
+        transcript.write_text("\n".join(events), encoding="utf-8")
+        with patch.object(Path, "read_text", side_effect=AssertionError("Transcript must be streamed")):
+            info = relay.parse_transcript(transcript)
+        self.assertEqual(info["first_request"], "Request 0")
+        self.assertEqual(info["recent_requests"], [f"Request {n}" for n in range(30, 35)])
+        self.assertEqual(info["files_changed"], [f"file-{n}" for n in range(10, 35)])
+        self.assertEqual(info["commands"], [f"command {n}" for n in range(27, 35)])
 
     def test_resume_is_explicit_and_checks_cli_support(self):
         result = subprocess.CompletedProcess([], 0, "Options: --resume ID", "")
