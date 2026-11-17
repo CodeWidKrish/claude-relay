@@ -19,15 +19,22 @@
 <br><br>
 
 **[🚀 Quick start](#-quick-start)** &nbsp;•&nbsp;
+**[v1.4.1](#whats-new-in-v141)** &nbsp;•&nbsp;
 **[🧠 How it works](#-how-it-works)** &nbsp;•&nbsp;
 **[🛠 Commands](#-commands)** &nbsp;•&nbsp;
 **[📸 Screenshots](#-screenshots)** &nbsp;•&nbsp;
-**[📘 Setup guide (PDF)](docs/Claude_Relay_Setup_Guide.pdf)** &nbsp;•&nbsp;
+**[📘 v1.2.1 setup guide (PDF)](docs/Claude_Relay_Setup_Guide.pdf)** &nbsp;•&nbsp;
 **[❓ FAQ](#-faq)**
 
 </div>
 
 <br>
+
+## What's new in v1.4.1
+
+- **Return to Claude on Windows and macOS.** Relay resolves the workspace path before constructing the checkpoint reference. Windows short paths and macOS temporary-directory aliases now work with `back --launch`.
+- **Python 3.8 CI coverage.** The compatibility job runs on Ubuntu 22.04, while the current Python matrix covers Windows, macOS, and Linux.
+- **Verification.** All 37 automated scenarios passed across the four [GitHub Actions jobs](https://github.com/CodeWidKrish/claude-relay/actions/runs/44017172112). The suite simulates provider behavior. A signed-in v1.4.1 handoff and return still need a live smoke test.
 
 ## ✨ What is Claude Relay?
 
@@ -346,6 +353,24 @@ Run both test scripts for **37 scenarios**. The tests simulate Claude hook paylo
 5. Run `python relay.py purge-answers --older-than-days 30` to delete old answer files. Review retained checkpoints separately. Relay removes its temporary prompt files after a headless call.
 
 When a matching Claude transcript is missing, the checkpoint records that and includes any available local Git state. The last agent update can be incomplete if the limit hit mid-response. The target's checkpoint prompt identifies one task and includes its recorded progress.
+
+### Preview, continue, and return
+
+Run these from the project folder after Relay creates a checkpoint. Replace `SESSION_ID` with the ID shown by `checkpoints`. Use `manual` for a checkpoint created without a session ID.
+
+```bash
+python relay.py checkpoints
+python relay.py preview --session SESSION_ID
+python relay.py launch --session SESSION_ID
+```
+
+When you're ready to return to Claude Code, run:
+
+```bash
+python relay.py back --launch --session SESSION_ID
+```
+
+Add `--resume` to that command when you want to reopen the original Claude conversation and your installed Claude CLI supports it.
 
 ### Upgrading from v1.2.1
 
