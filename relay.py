@@ -42,7 +42,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 IS_WIN = platform.system() == "Windows"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
@@ -617,7 +617,7 @@ def cmd_ask(args):
 
 
 def cmd_back(args):
-    cfg, cwd = config(), Path(args.cwd or os.getcwd())
+    cfg, cwd = config(), Path(args.cwd or os.getcwd()).resolve()
     handoff = selected_checkpoint(cwd, args.session)
     if not handoff.exists():
         print("No .relay/HANDOFF.md in this folder - nothing to hand back.")

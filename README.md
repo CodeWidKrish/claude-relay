@@ -6,8 +6,8 @@
 
 <br>
 
-<a href="#-quick-start"><img src="https://img.shields.io/badge/version-1.4.0-ff8a4c?style=for-the-badge" alt="Version 1.4.0"></a>
-<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-36%20scenarios-2ea043?style=for-the-badge&logo=githubactions&logoColor=white" alt="36 test scenarios"></a>
+<a href="#-quick-start"><img src="https://img.shields.io/badge/version-1.4.1-ff8a4c?style=for-the-badge" alt="Version 1.4.1"></a>
+<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-37%20scenarios-2ea043?style=for-the-badge&logo=githubactions&logoColor=white" alt="37 test scenarios"></a>
 <img src="https://img.shields.io/badge/python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
 <img src="https://img.shields.io/badge/dependencies-zero-8957e5?style=for-the-badge" alt="Zero dependencies">
 <br>
@@ -259,7 +259,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 
 ## ✅ Tested conditions
 
-Run both test scripts for **36 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers.
+Run both test scripts for **37 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers.
 
 <details>
 <summary><b>🧪 Show all edge cases covered</b></summary>

@@ -126,6 +126,17 @@ class RelayRegressions(unittest.TestCase):
         self.assertIn("Partial output", answer)
         self.assertIn("CLI error", answer)
 
+    def test_back_launch_canonicalizes_workspace_path(self):
+        relay.build_handoff(self.project, session="original")
+        alternate_path = self.project / ".." / self.project.name
+        args = argparse.Namespace(cwd=str(alternate_path), session="original", launch=True, resume=False)
+        with patch.object(relay, "open_in_new_terminal", return_value=True) as launcher:
+            with contextlib.redirect_stdout(io.StringIO()):
+                relay.cmd_back(args)
+        command, cwd, _ = launcher.call_args.args
+        self.assertEqual(cwd, self.project.resolve())
+        self.assertIn(".relay/sessions/", command[-1])
+
     def test_resume_is_explicit_and_checks_cli_support(self):
         result = subprocess.CompletedProcess([], 0, "Options: --resume ID", "")
         with patch.object(relay.subprocess, "run", return_value=result):
