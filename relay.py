@@ -364,7 +364,8 @@ def git_summary(cwd):
         if st.returncode != 0:
             return ""
         diff = subprocess.run(["git", "diff", "--stat"], **kw)
-        return (st.stdout.strip() + ("\n\n" + diff.stdout.strip() if diff.stdout.strip() else "")).strip()
+        stat = diff.stdout.strip("\n").rstrip()  # keep the leading space git uses to align the stat
+        return (st.stdout.strip() + ("\n\n" + stat if stat else "")).strip("\n")
     except Exception:
         return ""
 
@@ -788,7 +789,7 @@ def changes_since_handoff(cwd, handoff_text):
     if not re.fullmatch(r"[0-9a-f]{7,40}", marker or ""):
         return ""
     commits = git(cwd, "log", "--oneline", "--no-decorate", "-n", "20", marker + "..HEAD").strip()
-    stat = git(cwd, "diff", "--stat", marker).strip()
+    stat = git(cwd, "diff", "--stat", marker).strip("\n").rstrip()
     untracked = git(cwd, "ls-files", "--others", "--exclude-standard").strip()
     parts = ["### Commits since handoff", "```", commits or "(none)", "```",
              "### Files changed since handoff (committed and uncommitted)", "```", stat or "(none)", "```"]

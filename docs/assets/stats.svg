@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="170" viewBox="0 0 1200 170" role="img" aria-label="54 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns masked">
+  <defs>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#211d4d"/>
+      <stop offset="1" stop-color="#151233"/>
+    </linearGradient>
+    <linearGradient id="num" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff9a5a"/>
+      <stop offset="1" stop-color="#7aa8ff"/>
+    </linearGradient>
+    <style>
+      .n { font: 800 46px 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; fill: url(#num); }
+      .l { font: 600 15px 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; fill: #cfcaf7; letter-spacing: .4px; }
+      .tile { opacity: 0; animation: rise .8s ease-out forwards; }
+      .t2 { animation-delay: .15s; } .t3 { animation-delay: .3s; } .t4 { animation-delay: .45s; } .t5 { animation-delay: .6s; }
+      @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+      .ring { animation: ring 3.2s ease-in-out infinite; }
+      @keyframes ring { 0%,100% { stroke-opacity: .35; } 50% { stroke-opacity: .95; } }
+    </style>
+  </defs>
+  <g class="tile t1"><rect x="10" y="15" width="220" height="140" rx="18" fill="url(#card)" stroke="#ff8a4c" class="ring"/>
+    <text x="120" y="88" text-anchor="middle" class="n">54</text><text x="120" y="122" text-anchor="middle" class="l">AUTOMATED TESTS</text></g>
+  <g class="tile t2"><rect x="250" y="15" width="220" height="140" rx="18" fill="url(#card)" stroke="#f6c177" class="ring"/>
+    <text x="360" y="88" text-anchor="middle" class="n">0</text><text x="360" y="122" text-anchor="middle" class="l">DEPENDENCIES</text></g>
+  <g class="tile t3"><rect x="490" y="15" width="220" height="140" rx="18" fill="url(#card)" stroke="#c084fc" class="ring"/>
+    <text x="600" y="88" text-anchor="middle" class="n">1</text><text x="600" y="122" text-anchor="middle" class="l">PYTHON FILE</text></g>
+  <g class="tile t4"><rect x="730" y="15" width="220" height="140" rx="18" fill="url(#card)" stroke="#818cf8" class="ring"/>
+    <text x="840" y="88" text-anchor="middle" class="n">3</text><text x="840" y="122" text-anchor="middle" class="l">OPERATING SYSTEMS</text></g>
+  <g class="tile t5"><rect x="970" y="15" width="220" height="140" rx="18" fill="url(#card)" stroke="#5b8cff" class="ring"/>
+    <text x="1080" y="88" text-anchor="middle" class="n">10</text><text x="1080" y="122" text-anchor="middle" class="l">SECRET PATTERNS</text></g>
+</svg>
