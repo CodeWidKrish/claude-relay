@@ -4,6 +4,7 @@ Run:  python tests/test_relay.py
 Creates a fake home folder and a fake Claude Code transcript, then sends the relay the same
 JSON Claude Code sends to the status line and to the StopFailure hook.
 """
+import hashlib
 import json
 import os
 import subprocess
@@ -74,7 +75,8 @@ def setup():
 
 def main():
     home, project, transcript, env = setup()
-    handoff = project / ".relay" / "HANDOFF.md"
+    session = ["--session", transcript.stem]
+    handoff = project / ".relay" / "sessions" / hashlib.sha256(transcript.stem.encode()).hexdigest()[:24] / "HANDOFF.md"
     reset = int(time.time()) + 3600
     st = lambda pct, r=reset: {"model": {"display_name": "Sonnet"}, "workspace": {"current_dir": str(project)},
                                "transcript_path": str(transcript),
@@ -125,7 +127,7 @@ def main():
     def t_92():
         out = run(["statusline"], st(92), env)
         assert "/handoff" in out and handoff.exists(), "handoff not pre-built at 92%"
-        assert (project / ".agents" / "rules" / "relay-handoff.md").exists()
+        assert "Source session:" in handoff.read_text(encoding="utf-8")
     case("7  status line at 92%: red bar + handoff prepared in advance", t_92)
 
     def t_ms_iso():
@@ -142,7 +144,7 @@ def main():
 
     def t_limit():
         out = run(["on-limit"], hook, env)
-        assert "would open a new terminal" in out and "agy" in out and ".relay/HANDOFF.md" in out
+        assert "would open a new terminal" in out and "agy" in out and "HANDOFF.md" in out
         text = handoff.read_text(encoding="utf-8")
         for must in ["Build a REST API", "मंद करें", "PUT /lights/{id}/brightness", "routes.py",
                      "[ ] Add /lights/{id} endpoints", "pip install fastapi"]:
@@ -159,24 +161,24 @@ def main():
         text = handoff.read_text(encoding="utf-8").replace("- (next agent: add notes here)",
                                                            "- Antigravity: added brightness validation")
         handoff.write_text(text, encoding="utf-8")
-        run(["handoff", "--cwd", str(project)], env=env)
+        run(["handoff", "--cwd", str(project)] + session, env=env)
         assert "added brightness validation" in handoff.read_text(encoding="utf-8")
     case("12 rebuilding the handoff keeps Antigravity's progress notes", t_notes_kept)
 
     def t_manual():
-        out = run(["handoff", "--launch", "--cwd", str(project)], env=env)
+        out = run(["handoff", "--launch", "--cwd", str(project)] + session, env=env)
         assert "Handoff written" in out and "would open" in out
     case("13 manual switch (/handoff): handoff + Antigravity opened", t_manual)
 
     def t_model():
         run(["install", "--model", "Claude Sonnet 4.6"], env=env)
-        out = run(["launch", "--cwd", str(project)], env=env)
+        out = run(["launch", "--cwd", str(project)] + session, env=env)
         assert '--model "Claude Sonnet 4.6"' in out or "--model 'Claude Sonnet 4.6'" in out
         run(["install", "--model", ""], env=env)
     case("14 optional Claude model inside Antigravity is passed to agy", t_model)
 
     def t_back():
-        out = run(["back", "--launch", "--cwd", str(project)], env=env)
+        out = run(["back", "--launch", "--cwd", str(project)] + session, env=env)
         assert "Returned to Claude Code" in handoff.read_text(encoding="utf-8") and "claude" in out
     case("15 switch back after reset: Claude Code opened with the progress", t_back)
 
@@ -192,7 +194,7 @@ def main():
         e = dict(env, RELAY_DRY_RUN="0", PATH="")
         cfgf = home / ".claude-relay" / "config.json"
         c = json.loads(cfgf.read_text()); c["target_cmd"] = "agy-not-installed"; cfgf.write_text(json.dumps(c))
-        out = run(["launch", "--cwd", str(project)], env=e)
+        out = run(["launch", "--cwd", str(project)] + session, env=e, expect_ok=False)
         c["target_cmd"] = "agy"; cfgf.write_text(json.dumps(c))
         assert "not found on PATH" in out and "run this yourself" in out
     case("17 Antigravity not installed: clear message with the exact command", t_missing_agy)
@@ -229,8 +231,8 @@ def main():
         "import sys\nsys.stdout.reconfigure(encoding='utf-8')\nargs=sys.argv[1:]\n"
         "prompt=args[args.index('-p')+1] if '-p' in args else ''\n"
         "import os\n"
-        "if 'ask-prompt.md' in prompt:\n"
-        "    prompt=open(os.path.join('.relay','ask-prompt.md'),encoding='utf-8').read()\n"
+        "if prompt.startswith('Read the file .relay/ask-prompt-'):\n"
+        "    prompt=open(prompt.split()[3],encoding='utf-8').read()\n"
         "mode=args[args.index('--mode')+1] if '--mode' in args else 'none'\n"
         "print('FAKE-AGY mode=' + mode)\nprint('ANSWER to: ' + prompt.split('REQUEST:')[-1].strip())\n",
         encoding="utf-8")
@@ -245,7 +247,7 @@ def main():
     def t_ask_cmd_installed():
         run(["install"], env=env)
         cmd = (home / ".claude" / "commands" / "ask-antigravity.md").read_text(encoding="utf-8")
-        assert "$ARGUMENTS" in cmd and "ask --file .relay/ask.md" in cmd
+        assert "$ARGUMENTS" in cmd and "ask --file PATH_TO_REQUEST" in cmd
         assert "/ask-antigravity command installed" in run(["doctor"], env=env)
     case("22 install adds /ask-antigravity; doctor checks it", t_ask_cmd_installed)
 
@@ -268,7 +270,7 @@ def main():
         e = dict(env_ask, RELAY_PROMPT_FILE="1")
         out = run(["ask", "Line one\nLine two with 100% & special ^ chars", "--cwd", str(project)], env=e)
         assert "Line one" in out and "Line two with 100% & special ^ chars" in out, out
-        assert (project / ".relay" / "ask-prompt.md").exists()
+        assert not list((project / ".relay").glob("ask-prompt-*.md"))
     case("25 ask on Windows .cmd launchers: multi-line request + % & ^ arrive intact", t_ask_prompt_file)
 
     def t_ask_missing():

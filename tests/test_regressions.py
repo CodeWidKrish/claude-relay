@@ -1,0 +1,139 @@
+"""Regression tests for session isolation, launcher failures, and installation ownership."""
+
+import argparse
+import contextlib
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import relay
+
+
+class RelayRegressions(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.project = root / "project"
+        self.other = root / "other"
+        self.project.mkdir()
+        self.other.mkdir()
+        state = root / "relay"
+        claude = root / "claude"
+        paths = patch.multiple(relay, STATE_DIR=state, STATE_FILE=state / "state.json",
+                               CONFIG_FILE=state / "config.json", LOG_FILE=state / "relay.log",
+                               CLAUDE_DIR=claude, CLAUDE_SETTINGS=claude / "settings.json",
+                               CLAUDE_PROJECTS=claude / "projects")
+        paths.start()
+        self.addCleanup(paths.stop)
+
+    def transcript(self, project, session, text):
+        path = relay.project_dir_for(project) / (session + ".jsonl")
+        relay.save_text(path, json.dumps({"type": "user", "message": {"content": text}}))
+        return path
+
+    def hook(self, project, session):
+        return {"error_type": "rate_limit", "cwd": str(project), "session_id": session}
+
+    def fire(self, payload):
+        with patch.object(relay, "read_stdin_json", return_value=payload), patch.object(relay, "notify"):
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                relay.cmd_on_limit(None)
+            return output.getvalue()
+
+    def test_foreign_transcript_is_excluded(self):
+        private = self.transcript(self.other, "same", "Private other-project request")
+        path = relay.build_handoff(self.project, private, session="same")
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("Transcript:** unavailable", text)
+        self.assertNotIn("Private other-project request", text)
+
+    def test_two_sessions_and_two_projects_switch_independently(self):
+        first = self.hook(self.project, "one")
+        second = self.hook(self.project, "two")
+        third = self.hook(self.other, "one")
+        self.transcript(self.project, "one", "First unique task")
+        self.transcript(self.project, "two", "Second unique task")
+        with patch.object(relay, "open_in_new_terminal", return_value=True) as launcher:
+            for payload in (first, second, third, first):
+                self.fire(payload)
+        self.assertEqual(launcher.call_count, 3)
+        self.assertIn("First unique task", relay.checkpoint(self.project, "one").read_text(encoding="utf-8"))
+        self.assertIn("Second unique task", relay.checkpoint(self.project, "two").read_text(encoding="utf-8"))
+
+    def test_concurrent_hooks_launch_once(self):
+        relay.save_json(relay.CONFIG_FILE, {"mode": "auto", "dry_run": True})
+        payload = json.dumps(self.hook(self.project, "parallel"))
+        env = dict(os.environ, RELAY_HOME=str(relay.STATE_DIR), CLAUDE_CONFIG_DIR=str(relay.CLAUDE_DIR),
+                   RELAY_DRY_RUN="1")
+        command = [sys.executable, str(Path(relay.__file__).resolve()), "on-limit"]
+        with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env) as first:
+            with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env) as second:
+                first.stdin.write(payload.encode())
+                first.stdin.flush()
+                other = second.communicate(payload.encode(), timeout=30)[0]
+                original = first.communicate(timeout=30)[0]
+        self.assertEqual((original + other).count(b"Antigravity launch requested"), 1)
+        self.assertEqual((first.returncode, second.returncode), (0, 0))
+
+    def test_failed_launch_can_retry(self):
+        payload = self.hook(self.project, "test")
+        with patch.object(relay, "open_in_new_terminal", side_effect=[False, True]) as launcher:
+            self.assertIn("launch failed", self.fire(payload))
+            self.assertIn("launch requested", self.fire(payload))
+            self.assertEqual(self.fire(payload), "")
+        self.assertEqual(launcher.call_count, 2)
+
+    def test_uninstall_preserves_user_commands_and_settings(self):
+        custom = relay.CLAUDE_DIR / "commands" / "handoff.md"
+        relay.save_text(custom, "Custom handoff")
+        original = {"type": "command", "command": "my-status"}
+        unrelated = {"matcher": "rate_limit", "hooks": [{"type": "command", "command": "other/relay.py"}]}
+        relay.save_json(relay.CLAUDE_SETTINGS, {"statusLine": original, "hooks": {"StopFailure": [unrelated]}})
+        args = argparse.Namespace(mode=None, threshold=None, model=None)
+        with contextlib.redirect_stdout(io.StringIO()):
+            relay.cmd_install(args)
+            relay.cmd_install(args)
+            ask = relay.CLAUDE_DIR / "commands" / "ask-antigravity.md"
+            ask.write_text("My edited command", encoding="utf-8")
+            relay.cmd_uninstall(None)
+        self.assertEqual(custom.read_text(encoding="utf-8"), "Custom handoff")
+        self.assertEqual(ask.read_text(encoding="utf-8"), "My edited command")
+        settings = relay.read_settings()
+        self.assertEqual(settings["statusLine"], original)
+        self.assertEqual(settings["hooks"]["StopFailure"], [unrelated])
+
+    def test_invalid_settings_leave_config_intact(self):
+        relay.save_json(relay.CONFIG_FILE, {"mode": "manual"})
+        relay.save_text(relay.CLAUDE_SETTINGS, "{ invalid")
+        with self.assertRaises(ValueError):
+            relay.cmd_install(argparse.Namespace(mode="auto", threshold=None, model=None))
+        self.assertEqual(relay.load_json(relay.CONFIG_FILE, {}), {"mode": "manual"})
+
+    def test_partial_ask_output_preserves_failure(self):
+        result = subprocess.CompletedProcess([], 5, "Partial output", "CLI error")
+        with patch.object(relay.shutil, "which", return_value="agy.exe"), patch.object(
+                relay.subprocess, "run", return_value=result):
+            ok, answer = relay.run_antigravity_headless(relay.DEFAULT_CONFIG, "Question", self.project)
+        self.assertFalse(ok)
+        self.assertIn("Partial output", answer)
+        self.assertIn("CLI error", answer)
+
+    def test_resume_is_explicit_and_checks_cli_support(self):
+        result = subprocess.CompletedProcess([], 0, "Options: --resume ID", "")
+        with patch.object(relay.subprocess, "run", return_value=result):
+            self.assertEqual(relay.ClaudeCode.resume_command("original"), ["claude", "--resume", "original"])
+        result.stdout = "Usage: claude"
+        with patch.object(relay.subprocess, "run", return_value=result), self.assertRaises(ValueError):
+            relay.ClaudeCode.resume_command("original")
+
+
+if __name__ == "__main__":
+    unittest.main()

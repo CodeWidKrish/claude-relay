@@ -6,8 +6,8 @@
 
 <br>
 
-<a href="#-quick-start"><img src="https://img.shields.io/badge/version-1.2.1-ff8a4c?style=for-the-badge" alt="Version 1.2.1"></a>
-<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-28%2F28%20passing-2ea043?style=for-the-badge&logo=githubactions&logoColor=white" alt="Tests 28/28 passing"></a>
+<a href="#-quick-start"><img src="https://img.shields.io/badge/version-1.4.0-ff8a4c?style=for-the-badge" alt="Version 1.4.0"></a>
+<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-36%20scenarios-2ea043?style=for-the-badge&logo=githubactions&logoColor=white" alt="36 test scenarios"></a>
 <img src="https://img.shields.io/badge/python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
 <img src="https://img.shields.io/badge/dependencies-zero-8957e5?style=for-the-badge" alt="Zero dependencies">
 <br>
@@ -40,7 +40,7 @@ Claude Pro gives Claude Code a **rolling 5-hour usage window**. When it runs out
 ### 🤝 Use Antigravity *inside* Claude
 Type **`/ask-antigravity <request>`** in a running Claude Code session. Claude sends the question to Google Antigravity, gets the answer back and carries on, **without leaving the session**.
 
-Use it for a second opinion, a code review or a research sub-task. It's **read-only by default**, and every answer is saved to `.relay/answers/`.
+Use it for a second opinion, a code review or a research sub-task. It uses **Antigravity plan mode** by default, and answers are saved to `.relay/answers/`.
 
 </td>
 <td width="50%" valign="top">
@@ -62,7 +62,7 @@ When the limit resets, one command hands the work **back to Claude**.
 
 | | Feature | Details |
 |:-:|---|---|
-| 🤝 | **`/ask-antigravity`** | Antigravity's headless mode, called from inside Claude Code. Runs in plan mode (read-only) unless you pass `--allow-edits`. |
+| 🤝 | **`/ask-antigravity`** | Antigravity's headless mode, called from inside Claude Code. Runs in plan mode unless you pass `--allow-edits`. |
 | 📊 | **Live usage bar** | `5h █████████░ 92%  resets 15:00`. Green, then yellow at 80%, then red at 90%. |
 | 📝 | **Prepares early** | The handoff is written at 90%, while Claude can still answer. At 100% it can't. |
 | ⚡ | **Automatic switch** | When the usage limit stops Claude, Antigravity opens with the task loaded and you get a desktop notification. |
@@ -79,7 +79,7 @@ When the limit resets, one command hands the work **back to Claude**.
 flowchart TD
     A([👩‍💻 You work in<br/>Claude Code]) --> B{5-hour usage}
     B -- "below 90%" --> A
-    B -- "≥ 90%" --> C[📝 Prepare<br/>.relay/HANDOFF.md]
+    B -- "≥ 90%" --> C[📝 Prepare<br/>session checkpoint]
     C --> D{Limit hit?}
     D -- "auto mode" --> E[⚡ StopFailure hook<br/>opens Antigravity]
     D -- "you type /handoff" --> E
@@ -122,14 +122,14 @@ sequenceDiagram
 | Step | What happens | Feature used |
 |---|---|---|
 | 1. Watch | Status line shows 5-hour usage and reset time | Claude Code **status line** JSON: `rate_limits.five_hour.used_percentage`, `resets_at` (Pro/Max plans) |
-| 2. Prepare | At 90%, `.relay/HANDOFF.md` is written in advance | Session transcript (`~/.claude/projects/*.jsonl`) and `git` |
-| 3a. Auto switch | Limit hit → handoff refreshed → `agy -i "Read .relay/HANDOFF.md and continue…"` in a new window | Claude Code **`StopFailure` hook**, matcher `rate_limit` |
+| 2. Prepare | At 90%, a session checkpoint is written in advance | Session transcript (`~/.claude/projects/*.jsonl`) and `git` |
+| 3a. Auto switch | Limit hit → checkpoint refreshed → an Antigravity launch is requested | Claude Code **`StopFailure` hook**, matcher `rate_limit` |
 | 3b. Manual switch | `/handoff` → Claude adds a summary → Antigravity opens | Claude Code **custom slash command** |
-| 4. Continue | Antigravity reads the handoff first and logs progress in it | Antigravity **rules**: `.agents/rules/relay-handoff.md` |
+| 4. Continue | Antigravity reads the handoff first and logs progress in it | The launch prompt identifies the selected checkpoint |
 | 5. Switch back | `relay.py back --launch` → Claude Code opens with the progress | `claude "<prompt>"` |
-| ★ Ask | `/ask-antigravity` → `.relay/ask.md` → `agy --mode plan -p …` → answer back in Claude | Slash command + Antigravity **headless mode** (`-p`) |
+| ★ Ask | `/ask-antigravity` → temporary request file → `agy --mode plan -p …` → answer back in Claude | Slash command + Antigravity **headless mode** (`-p`) |
 
-`StopFailure` can fire several times for one limit, so Relay switches only **once per 15 minutes**.
+`StopFailure` can fire several times for one limit, so Relay suppresses duplicate launch requests for **15 minutes per project and Claude session**. A failed launch request can be retried immediately.
 
 </details>
 
@@ -149,7 +149,8 @@ cd claude-relay
 
 ```bash
 python relay.py doctor
-python tests/test_relay.py      # ✅ 28/28 tests passed
+python tests/test_relay.py
+python tests/test_regressions.py
 ```
 
 **3️⃣ Install into Claude Code**
@@ -195,9 +196,12 @@ python /path/to/claude-relay/relay.py simulate --live   # really opens Antigravi
 | `install [--mode auto\|manual] [--threshold 90] [--model "<name>"]` | Adds the status line, `StopFailure` hook, `/handoff` and `/ask-antigravity` to Claude Code |
 | `doctor` | Checks Python, `claude`, `agy`, git and the installation |
 | `ask "<question>" \| --file F [--allow-edits] [--timeout 600]` | Asks Antigravity in headless mode and prints the answer |
-| `handoff [--launch] [--cwd DIR]` | Writes `.relay/HANDOFF.md` (and opens Antigravity) |
-| `launch [--cwd DIR]` | Opens Antigravity on the existing handoff |
-| `back [--launch] [--cwd DIR]` | Hands the work back to Claude Code |
+| `handoff [--launch] [--cwd DIR] [--session ID]` | Writes a checkpoint and optionally requests an Antigravity launch |
+| `launch [--cwd DIR] [--session ID]` | Requests an Antigravity launch with the selected checkpoint |
+| `back [--launch] [--cwd DIR] [--session ID] [--resume]` | Updates the selected checkpoint and optionally starts or resumes Claude Code |
+| `checkpoints [--cwd DIR]` | Lists checkpoint paths and session IDs |
+| `preview [--cwd DIR] [--session ID]` | Shows what the selected checkpoint contains |
+| `purge-answers --older-than-days N [--cwd DIR]` | Removes saved answers older than N days |
 | `simulate [--live] [--cwd DIR]` | Demo: usage 45% → 85% → 92% → limit hit → switch |
 | `status` | Shows config, last known usage and recent log lines |
 | `uninstall` | Removes Relay and restores your previous status line |
@@ -224,10 +228,11 @@ Environment variables: `RELAY_DRY_RUN=1` (print instead of launching), `RELAY_HO
 <summary><b>📝 What the handoff file contains</b></summary>
 <br>
 
-`.relay/HANDOFF.md` is plain Markdown, readable by people, Claude and Antigravity:
+Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI handoffs without a session ID use `.relay/HANDOFF.md`.
 
 - 🎯 The original goal and the 5 most recent requests
-- 🛑 **Where the previous agent stopped**
+- 🛑 Last recorded agent update, including tests and next steps when captured
+- 🧭 Source session, transcript availability and current Git branch
 - ✅ Task list (done / in progress / pending)
 - 📂 Files changed, last commands run, git status and diff stats
 - ⏰ When the Claude limit resets
@@ -248,13 +253,13 @@ Environment variables: `RELAY_DRY_RUN=1` (print instead of launching), `RELAY_HO
 <td width="50%" align="center"><b>⚙️ What <code>install</code> adds to Claude Code</b><br><br><img src="docs/images/claude-settings.png" alt="Claude settings"></td>
 </tr>
 <tr>
-<td colspan="2" align="center"><b>✅ Test suite: 28/28 passing</b><br><br><img src="docs/images/tests-passed.png" alt="Tests passing" width="70%"></td>
+<td colspan="2" align="center"><b>Original v1.2.1 test screenshot</b><br><br><img src="docs/images/tests-passed.png" alt="Tests passing" width="70%"></td>
 </tr>
 </table>
 
 ## ✅ Tested conditions
 
-Run `python tests/test_relay.py`: **28 scenarios**, and it needs neither Claude Code nor Antigravity (a fake `agy` is used).
+Run both test scripts for **36 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers.
 
 <details>
 <summary><b>🧪 Show all edge cases covered</b></summary>
@@ -280,7 +285,7 @@ Run `python tests/test_relay.py`: **28 scenarios**, and it needs neither Claude 
 </details>
 
 > [!NOTE]
-> **Verified on** Windows 11 (Python 3.14, Claude Code 2.1.221, Antigravity CLI 1.5.9) and Linux. `/ask-antigravity` was verified live on Windows 11 with the real Antigravity CLI.
+> **Historical v1.2.1 live check** Windows 11 with Python 3.14, Claude Code 2.1.221 and Antigravity CLI 1.5.9. The v1.4 test workflow runs simulated tests on Windows, macOS and Linux. Live v1.4 CLI behavior needs a signed-in smoke test.
 
 ## 🧯 Troubleshooting
 
@@ -314,7 +319,7 @@ Run `python tests/test_relay.py`: **28 scenarios**, and it needs neither Claude 
 
 <details>
 <summary><b>Can I use Antigravity without switching away from Claude?</b></summary>
-<br>Yes: <code>/ask-antigravity &lt;request&gt;</code>. Claude sends the request to Antigravity's headless mode (<code>agy -p</code>) and gets the answer back in the same session. Antigravity runs in <b>plan mode (read-only)</b> by default, so it can't change your files, and Claude asks you before applying anything it suggests.
+<br>Yes: <code>/ask-antigravity &lt;request&gt;</code>. Claude sends the request to Antigravity's headless mode (<code>agy -p</code>) and gets the answer back in the same session. Antigravity runs in <b>plan mode</b> by default, and the slash command asks Claude to confirm before applying suggestions. Antigravity controls plan-mode permissions.
 </details>
 
 <details>
@@ -324,28 +329,29 @@ Run `python tests/test_relay.py`: **28 scenarios**, and it needs neither Claude 
 
 <details>
 <summary><b>Does it work with the Antigravity IDE?</b></summary>
-<br>Yes. The handoff rule lives in <code>.agents/rules/</code>, which the IDE also reads. Open the project in the IDE and ask it to continue.
+<br>Yes. Open the project in the IDE and ask it to continue from the checkpoint path shown by <code>python relay.py checkpoints</code>.
 </details>
 
 <details>
 <summary><b>Is my code sent anywhere?</b></summary>
-<br>No. Relay only reads local files and starts local programs.
+<br>Relay saves files locally and invokes the two signed-in clients. When the destination agent reads a handoff or receives a question, its provider may process that content and the project files it reads.
 </details>
 
-## 🗺 Limitations & roadmap
+## v1.4 workflow
 
-- Antigravity continues the **task** from the handoff and the files, not Claude's exact chat history.
-- If the limit hits in the middle of an answer, the last step may be partial. The handoff lists the changed files so they can be checked.
-- `StopFailure` doesn't include the reset time, so Relay takes it from the status line.
+1. Run `python relay.py checkpoints` to see available session IDs. If multiple checkpoints exist, pass `--session ID` to select one. Use `--session manual` for the unsuffixed manual checkpoint.
+2. Run `python relay.py preview --session ID` to inspect the checkpoint before sharing it. It may contain source prompts, command text, paths, and Git state. Add `.relay/` to the target project's ignore rules before using Relay there.
+3. Run `python relay.py launch --session ID` to retry a failed launch or open a saved checkpoint. A launch request means Relay asked the terminal to start Antigravity. The terminal shows sign-in, model, and startup errors.
+4. Use `python relay.py back --launch --session ID` for a new Claude conversation with the checkpoint. Add `--resume` to request the original Claude conversation when the installed CLI advertises `--resume`. Relay reports unsupported resume so you can choose the new-session command.
+5. Run `python relay.py purge-answers --older-than-days 30` to delete old answer files. Review retained checkpoints separately. Relay removes its temporary prompt files after a headless call.
 
-**Roadmap**
+When a matching Claude transcript is missing, the checkpoint records that and includes any available local Git state. The last agent update can be incomplete if the limit hit mid-response. The target's checkpoint prompt identifies one task and includes its recorded progress.
 
-- [x] Auto and manual switch at the 5-hour limit
-- [x] `/ask-antigravity` inside a Claude Code session
-- [x] Windows `.cmd` launcher support
-- [ ] Automatic switch-back at the reset time
-- [ ] Automatic Claude summary at 90%
-- [ ] IDE-specific launch
+### Upgrading from v1.2.1
+
+Run `python relay.py install` again. Relay preserves existing slash-command files, including older copies. Use the CLI commands above if a command file is already present. If a workspace has the old `.agents/rules/relay-handoff.md` rule, remove that generated rule after reviewing its contents so it doesn't direct Antigravity to an older checkpoint.
+
+The [v1.2.1 PDF setup guide](docs/Claude_Relay_Setup_Guide.pdf) is historical. Use this README for the current version.
 
 ## 📁 Project structure
 
