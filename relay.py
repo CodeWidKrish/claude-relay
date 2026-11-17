@@ -15,9 +15,10 @@ Commands
   relay.py handoff [--launch]     manual switch: write the handoff (and open Antigravity)
   relay.py launch                 open Antigravity on the existing handoff
   relay.py ask "question" | --file F   ask Antigravity from inside a Claude Code session
-  relay.py back [--launch]        after the reset: hand the work back to Claude Code
+  relay.py back [--launch]        after the reset: hand the work (and what changed) back to Claude Code
   relay.py simulate [--live]      demo the automatic switch without using up your limit
-  relay.py status                 show last known usage, mode and log
+  relay.py status [--json]        usage, reset countdown, checkpoints in this project, recent log
+  relay.py config [KEY [VALUE]]   show or change a setting (mode, prepare_at, target_model, ...)
 """
 import argparse
 import datetime as dt
@@ -29,6 +30,7 @@ import tempfile
 import uuid
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -43,7 +45,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.4.3"
+VERSION = "1.5.0"
 IS_WIN = platform.system() == "Windows"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
@@ -64,6 +66,8 @@ DEFAULT_CONFIG = {
     "target_model": "",      # e.g. "Claude Sonnet 4.6" (exact name from `agy models`)
     "color": True,
     "dry_run": False,        # print launch commands instead of running them
+    "redact": True,          # mask API keys, tokens and passwords in checkpoints
+    "diff_lines": 200,       # max lines of uncommitted diff copied into a checkpoint (0 = none)
 }
 
 
@@ -302,6 +306,55 @@ def parse_transcript(path):
     return info
 
 
+SECRET_PATTERNS = [
+    (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.S),
+     "[REDACTED PRIVATE KEY]"),
+    (re.compile(r"\b(sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,})"), "[REDACTED]"),
+    (re.compile(r"\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), "[REDACTED]"),
+    (re.compile(r"\b(AKIA[0-9A-Z]{16})\b"), "[REDACTED]"),
+    (re.compile(r"\b(AIza[0-9A-Za-z_-]{35})"), "[REDACTED]"),
+    (re.compile(r"\b(xox[abprs]-[A-Za-z0-9-]{10,})"), "[REDACTED]"),
+    (re.compile(r"\b(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})"), "[REDACTED]"),
+    (re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{16,}"), r"\1[REDACTED]"),
+    (re.compile(r"([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+@"), r"\1[REDACTED]@"),
+    # NAME=value where NAME ends in a credential word (OPENAI_API_KEY=..., password: ...), not max_tokens=1024.
+    (re.compile(r"(?i)\b((?:[a-z0-9]+[_-])*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key"
+                r"|private[_-]?key|client[_-]?secret)\s*[:=]\s*[\"']?)(?![0-9]+\b)(?!\[REDACTED)"
+                r"([^\s\"',;]{4,})"), r"\1[REDACTED]"),
+]
+
+
+def redact(text):
+    """Mask common credentials so a checkpoint can be shared with another agent safely."""
+    for pattern, replacement in SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def git(cwd, *args, timeout=10):
+    """Run git in cwd; returns stdout ('' on any failure or when git is missing)."""
+    if not shutil.which("git"):
+        return ""
+    try:
+        r = subprocess.run(["git"] + list(args), cwd=str(cwd), capture_output=True, text=True, timeout=timeout,
+                           encoding="utf-8", errors="replace")
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def git_diff_excerpt(cwd, max_lines):
+    """Uncommitted changes (staged + unstaged), cut to max_lines so the checkpoint stays readable."""
+    if max_lines <= 0:
+        return ""
+    lines = git(cwd, "diff", "HEAD", "--no-color", "--unified=2").splitlines()
+    if not lines:
+        lines = git(cwd, "diff", "--no-color", "--unified=2").splitlines()
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + [f"... ({len(lines) - max_lines} more lines: run git diff to see everything)"]
+    return "\n".join(lines)
+
+
 def git_summary(cwd):
     if not shutil.which("git"):
         return ""
@@ -376,13 +429,21 @@ def build_handoff(cwd, transcript=None, reason="manual", resets_at=None, session
     g = git_summary(cwd)
     if g:
         L += ["", "## Git state", "```", g, "```"]
+        head = git(cwd, "rev-parse", "HEAD").strip()
+        if head:
+            L += ["", f"- **Git commit at handoff:** {head}"]
+    cfg = config()
+    excerpt = git_diff_excerpt(cwd, int(cfg.get("diff_lines") or 0))
+    if excerpt:
+        L += ["", "## Uncommitted changes (excerpt)", "```diff", excerpt, "```"]
     L += ["", "## Instructions for the next agent",
           "1. Read this file and the files listed above before changing anything.",
           "2. Continue from 'Last recorded agent update' and the task list. Do not redo finished work.",
           "3. As you work, add short notes to 'Progress since handoff' below, so the work can move back.",
           "", "## Progress since handoff", keep_notes or "- (next agent: add notes here)", ""]
     relay_folder(cwd)
-    save_text(out, "\n".join(L))
+    text = "\n".join(L)
+    save_text(out, redact(text) if cfg.get("redact", True) else text)
     log(f"handoff written: {out} (reason={reason}, transcript={transcript})")
     return out
 
@@ -630,6 +691,51 @@ def run_antigravity_headless(cfg, prompt, cwd, allow_edits=False, timeout=ASK_TI
     return True, out
 
 
+ASK_FILE_LIMIT, ASK_TOTAL_LIMIT, ASK_MAX_FILES = 40_000, 120_000, 8
+NEVER_ATTACH = re.compile(r"(?i)(^|[\\/])(\.env[^\\/]*|.*\.(pem|key|p12|pfx|keystore)|id_(rsa|dsa|ecdsa|ed25519)[^\\/]*"
+                          r"|credentials[^\\/]*|secrets?\.[a-z]+)$")
+
+
+def referenced_files(question, cwd):
+    """Project files named in the request, read here so Antigravity needs no tools to see them."""
+    cwd, found, total = Path(cwd).resolve(), [], 0
+    for token in re.findall(r"[\w./\\-]+\.[A-Za-z0-9]{1,8}\b", question):
+        token = token[2:] if token.startswith(("./", ".\\")) else token
+        try:
+            path = (cwd / token).resolve()
+            relative = path.relative_to(cwd).as_posix()
+        except (OSError, ValueError):
+            continue
+        if (relative in [name for name, _ in found] or relative.split("/")[0] in (HANDOFF_DIR, ".git")
+                or NEVER_ATTACH.search(relative) or not path.is_file() or path.stat().st_size > ASK_FILE_LIMIT):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if total + len(text) > ASK_TOTAL_LIMIT:
+            break
+        found.append((relative, redact(text)))
+        total += len(text)
+        if len(found) == ASK_MAX_FILES:
+            break
+    return found
+
+
+def ask_prompt(question, files, allow_edits, no_tools=False):
+    lines = ["You are helping another coding agent (Claude Code) that is working in this project folder.",
+             "Do not modify any files; answer only." if not allow_edits else "",
+             "Shell commands cannot be approved in this headless run. Read files with your file-reading tools, "
+             "or use the file contents attached below." if not no_tools else
+             "Do not call any tools. Answer only from the request and the file contents attached below.",
+             "Answer the request clearly and concisely.", "", "REQUEST:", question]
+    if files:
+        lines += ["", "ATTACHED FILES (current contents, already read for you):"]
+        for name, text in files:
+            lines += ["", f"--- {name} ---", text.rstrip(), f"--- end of {name} ---"]
+    return "\n".join(line for line in lines if line is not None)
+
+
 def cmd_ask(args):
     """Use Antigravity from inside a Claude Code session: send a question/sub-task, print the answer."""
     cfg, cwd = config(), Path(args.cwd or os.getcwd()).resolve()
@@ -644,15 +750,21 @@ def cmd_ask(args):
     if not question:
         print('Nothing to ask. Usage: relay.py ask "your question"  or  relay.py ask --file question.md')
         sys.exit(1)
-    prompt = ("You are helping another coding agent (Claude Code) that is working in this project folder. "
-              + ("" if args.allow_edits else "Do not modify any files; answer only. ")
-              + "Read files with your file-reading tools: shell commands cannot be approved in this headless run. "
-              + "Answer the request below clearly and concisely.\n\nREQUEST:\n" + question)
+    files = referenced_files(question, cwd)
+    prompt = ask_prompt(question, files, args.allow_edits)
     if cfg.get("dry_run"):
-        print(f"[dry-run] would run Antigravity headless in {cwd} with: {question[:200]}")
+        attached = ", ".join(name for name, _ in files) or "none"
+        print(f"[dry-run] would run Antigravity headless in {cwd} with: {question[:200]}\n"
+              f"[dry-run] files attached: {attached}")
         return
-    print(f"Asking Antigravity ({'may edit files' if args.allow_edits else 'plan mode'})...", file=sys.stderr)
+    print(f"Asking Antigravity ({'may edit files' if args.allow_edits else 'plan mode'}"
+          f"{', ' + str(len(files)) + ' file(s) attached' if files else ''})...", file=sys.stderr)
     ok, answer = run_antigravity_headless(cfg, prompt, cwd, args.allow_edits, args.timeout)
+    if not ok and "permission" in answer.lower():
+        # Headless mode cannot approve tools. Ask once more for an answer from the attached content alone.
+        print("Antigravity needed a tool it cannot use headless; retrying without tools...", file=sys.stderr)
+        ok, answer = run_antigravity_headless(cfg, ask_prompt(question, files, args.allow_edits, no_tools=True),
+                                              cwd, args.allow_edits, args.timeout)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     out = cwd / HANDOFF_DIR / ASK_DIR / f"{stamp}-{uuid.uuid4().hex}.md"
     try:
@@ -669,6 +781,22 @@ def cmd_ask(args):
         sys.exit(2)
 
 
+def changes_since_handoff(cwd, handoff_text):
+    """Summarise commits and file changes made after the checkpoint was written (by Antigravity or anyone)."""
+    marker = next((line.split("** ", 1)[1].strip() for line in handoff_text.splitlines()
+                   if line.startswith("- **Git commit at handoff:** ")), "")
+    if not re.fullmatch(r"[0-9a-f]{7,40}", marker or ""):
+        return ""
+    commits = git(cwd, "log", "--oneline", "--no-decorate", "-n", "20", marker + "..HEAD").strip()
+    stat = git(cwd, "diff", "--stat", marker).strip()
+    untracked = git(cwd, "ls-files", "--others", "--exclude-standard").strip()
+    parts = ["### Commits since handoff", "```", commits or "(none)", "```",
+             "### Files changed since handoff (committed and uncommitted)", "```", stat or "(none)", "```"]
+    if untracked:
+        parts += ["### New untracked files", "```", untracked, "```"]
+    return "\n".join(parts) + "\n"
+
+
 def cmd_back(args):
     cfg, cwd = config(), Path(args.cwd or os.getcwd()).resolve()
     handoff = selected_checkpoint(cwd, args.session)
@@ -682,15 +810,23 @@ def cmd_back(args):
     checkpoint_session = args.session
     if checkpoint_session is None and handoff.parent.name != HANDOFF_DIR:
         checkpoint_session = source_session(handoff)
+    since = changes_since_handoff(cwd, handoff.read_text(encoding="utf-8", errors="replace"))
     with session_state(cwd, None if checkpoint_session == "manual" else checkpoint_session):
         with handoff.open("a", encoding="utf-8") as stream:
             stream.write(f"\n## Returned to Claude Code – {dt.datetime.now():%d %b %Y, %H:%M}\n")
-            if g:
+            if since:
+                stream.write(since)
+            elif g:
                 stream.write(f"```\n{g}\n```\n")
     print(f"Handoff updated: {handoff}")
+    if since:
+        for line in since.splitlines():  # same summary, without the Markdown fences
+            if line != "```":
+                print(line[4:] + ":" if line.startswith("### ") else "  " + line)
     if command:
         relative = handoff.relative_to(cwd).as_posix()
-        command.append(f"Read {relative}, especially Progress since handoff, then continue.")
+        command.append(f"Read {relative}, especially Progress since handoff and the Returned to Claude Code "
+                       "summary of what changed, then continue.")
         if not open_in_new_terminal(command, cwd, cfg):
             sys.exit(2)
 
@@ -780,10 +916,101 @@ def cmd_doctor(_args):
     print("\nAll good." if ok_all else "\nFix the items marked FIX, then run doctor again.")
 
 
-def cmd_status(_args):
-    print(json.dumps({"version": VERSION, "config": config(), "state": load_json(STATE_FILE, {})}, indent=2))
+def human_delta(seconds):
+    seconds = int(abs(seconds))
+    hours, minutes = seconds // 3600, seconds % 3600 // 60
+    return f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+
+
+def cmd_status(args):
+    cfg, state = config(), load_json(STATE_FILE, {})
+    if getattr(args, "json", False):
+        print(json.dumps({"version": VERSION, "config": cfg, "state": state}, indent=2))
+        return
+    now = time.time()
+    print(f"Claude Relay {VERSION}   mode: {cfg['mode']}   prepare at {cfg['prepare_at']}%   "
+          f"Antigravity model: {cfg['target_model'] or 'default'}")
+    pct, resets = to_float(state.get("five_hour_pct")), to_epoch(state.get("resets_at"))
+    if pct is None:
+        print("5-hour usage : no data yet (send one message in Claude Code; Pro/Max plans only)")
+    else:
+        bar = "█" * int(min(max(pct, 0), 100) // 10)
+        seen = human_delta(now - float(state.get("updated") or now))
+        print(f"5-hour usage : {bar}{'░' * (10 - len(bar))} {pct:.0f}%   (seen {seen} ago)")
+    if resets:
+        if resets > now:
+            print(f"Resets       : {fmt_time(resets)}, in {human_delta(resets - now)}")
+        else:
+            print(f"Resets       : {fmt_time(resets)}, {human_delta(now - resets)} ago. "
+                  "Claude is available again: run relay.py back --launch in the project.")
+    cwd = Path(getattr(args, "cwd", None) or os.getcwd()).resolve()
+    root = cwd / HANDOFF_DIR
+    found = sorted(root.glob("sessions/*/" + HANDOFF_NAME)) + ([root / HANDOFF_NAME] if (root / HANDOFF_NAME).exists() else [])
+    print(f"Checkpoints  : {len(found)} in {cwd}")
+    for path in found:
+        updated = dt.datetime.fromtimestamp(path.stat().st_mtime).strftime("%d %b %H:%M")
+        label = "manual" if path.parent == root else (source_session(path) or "unknown")
+        print(f"  {label}  (updated {updated})\n    {path.relative_to(cwd).as_posix()}")
     if LOG_FILE.exists():
-        print("\nLast log lines:\n" + "\n".join(LOG_FILE.read_text(encoding="utf-8").splitlines()[-10:]))
+        print("\nRecent activity:")
+        for line in LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-6:]:
+            stamp, _, message = line.partition("  ")
+            message = message.split(" (reason=", 1)[0].replace(str(cwd), ".")
+            print(f"  {stamp[11:16] or stamp}  {message[:96] + ' …' if len(message) > 97 else message}")
+
+
+CONFIG_RULES = {
+    "mode": ("choice", ("auto", "manual")),
+    "warn_at": ("int", (1, 99)),
+    "prepare_at": ("int", (50, 99)),
+    "target_cmd": ("text", None),
+    "target_model": ("text", None),
+    "color": ("bool", None),
+    "redact": ("bool", None),
+    "diff_lines": ("int", (0, 5000)),
+}
+
+
+def parse_setting(key, value):
+    kind, rule = CONFIG_RULES[key]
+    if kind == "choice":
+        if value not in rule:
+            raise ValueError(f"{key} must be one of: {', '.join(rule)}")
+        return value
+    if kind == "int":
+        try:
+            number = int(value)
+        except ValueError:
+            raise ValueError(f"{key} must be a whole number") from None
+        if not rule[0] <= number <= rule[1]:
+            raise ValueError(f"{key} must be between {rule[0]} and {rule[1]}")
+        return number
+    if kind == "bool":
+        if value.lower() not in ("true", "false", "on", "off", "1", "0", "yes", "no"):
+            raise ValueError(f"{key} must be true or false")
+        return value.lower() in ("true", "on", "1", "yes")
+    return value
+
+
+def cmd_config(args):
+    stored = load_json(CONFIG_FILE, {})
+    cfg = dict(DEFAULT_CONFIG, **stored)
+    if not args.key:
+        for key in CONFIG_RULES:
+            print(f"{key:<13} {json.dumps(cfg.get(key))}")
+        print(f"\nChange one with: relay.py config KEY VALUE   (file: {CONFIG_FILE})")
+        return
+    if args.key not in CONFIG_RULES:
+        raise ValueError(f"Unknown setting {args.key!r}. Known: {', '.join(CONFIG_RULES)}")
+    if args.value is None:
+        print(json.dumps(cfg.get(args.key)))
+        return
+    stored[args.key] = parse_setting(args.key, args.value)
+    merged = dict(DEFAULT_CONFIG, **stored)
+    if merged["warn_at"] >= merged["prepare_at"]:
+        raise ValueError("warn_at must be lower than prepare_at")
+    save_json(CONFIG_FILE, stored)
+    print(f"{args.key} = {json.dumps(stored[args.key])}")
 
 
 def cmd_install(args):
@@ -844,7 +1071,8 @@ def cmd_install(args):
         "Use Google Antigravity as a second opinion / helper, then continue here.\n"
         "Request: $ARGUMENTS\n\n"
         "1. Write the request above to a unique file under `.relay/` with the Write tool. Add any short context Antigravity needs "
-        "(relevant file paths, what you already tried). If the request is empty, ask me what to send.\n"
+        "(what you already tried, and the relevant files as project-relative paths such as src/app.py: Relay attaches "
+        "those files for Antigravity). If the request is empty, ask me what to send.\n"
         f"2. Run with the Bash tool (timeout 600000 ms): {run('ask --file PATH_TO_REQUEST')}\n"
         "3. Read Antigravity's answer, tell me the key points in a few lines, and say whether you agree. "
         "Do not apply any change it suggests until I confirm.\n")
@@ -921,8 +1149,14 @@ def main(argv=None):
     i = sub.add_parser("install")
     i.add_argument("--mode", choices=["auto", "manual"]); i.add_argument("--threshold", type=int)
     i.add_argument("--model")
-    for name in ("uninstall", "statusline", "on-limit", "status", "doctor"):
+    for name in ("uninstall", "statusline", "on-limit", "doctor"):
         sub.add_parser(name)
+    status = sub.add_parser("status")
+    status.add_argument("--json", action="store_true")
+    status.add_argument("--cwd")
+    conf = sub.add_parser("config")
+    conf.add_argument("key", nargs="?")
+    conf.add_argument("value", nargs="?")
     h = sub.add_parser("handoff"); h.add_argument("--launch", action="store_true")
     h.add_argument("--cwd"); h.add_argument("--transcript")
     l = sub.add_parser("launch"); l.add_argument("--cwd")
@@ -949,7 +1183,7 @@ def main(argv=None):
         {"install": cmd_install, "uninstall": cmd_uninstall, "statusline": cmd_statusline, "on-limit": cmd_on_limit,
      "status": cmd_status, "doctor": cmd_doctor, "handoff": cmd_handoff, "launch": cmd_launch, "ask": cmd_ask,
      "back": cmd_back, "simulate": cmd_simulate, "preview": cmd_preview, "checkpoints": cmd_list,
-         "purge-answers": cmd_purge}[args.cmd](args)
+         "purge-answers": cmd_purge, "config": cmd_config}[args.cmd](args)
     except (ValueError, OSError, subprocess.TimeoutExpired) as error:
         print(f"Relay: {error}", file=sys.stderr)
         sys.exit(2)

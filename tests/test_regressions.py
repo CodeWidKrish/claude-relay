@@ -266,6 +266,113 @@ class RelayRegressions(unittest.TestCase):
         with relay.session_state(self.project, "lock") as state:
             self.assertTrue(state["ok"])
 
+    # ---- v1.5: safer and more useful checkpoints -------------------------------------------------
+    def git_project(self):
+        def g(*args):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com"] + list(args),
+                           cwd=str(self.project), check=True, capture_output=True)
+        g("init", "-q")
+        (self.project / "app.py").write_text("x = 1\n", encoding="utf-8")
+        g("add", ".")
+        g("commit", "-qm", "init")
+        return g
+
+    def test_checkpoint_redacts_secrets_but_keeps_normal_text(self):
+        secret = "sk-ant-api03-" + "a" * 30
+        self.transcript(self.project, "keys", f"Use OPENAI_API_KEY={secret} and keep max_tokens=1024")
+        text = relay.build_handoff(self.project, session="keys").read_text(encoding="utf-8")
+        self.assertNotIn(secret, text)
+        self.assertIn("[REDACTED]", text)
+        self.assertIn("max_tokens=1024", text)
+        relay.save_json(relay.CONFIG_FILE, {"redact": False})
+        self.assertIn(secret, relay.build_handoff(self.project, session="keys").read_text(encoding="utf-8"))
+
+    def test_checkpoint_includes_a_bounded_diff_excerpt(self):
+        self.git_project()
+        (self.project / "app.py").write_text("".join(f"line {n}\n" for n in range(400)), encoding="utf-8")
+        relay.save_json(relay.CONFIG_FILE, {"diff_lines": 30})
+        text = relay.build_handoff(self.project, session="diff").read_text(encoding="utf-8")
+        excerpt = text.split("## Uncommitted changes (excerpt)", 1)[1].split("## Instructions", 1)[0]
+        self.assertIn("+line 0", excerpt)
+        self.assertIn("more lines: run git diff", excerpt)
+        self.assertLess(len(excerpt.splitlines()), 40)
+        self.assertRegex(text, r"Git commit at handoff:\*\* [0-9a-f]{40}")
+        relay.save_json(relay.CONFIG_FILE, {"diff_lines": 0})
+        self.assertNotIn("Uncommitted changes", relay.build_handoff(self.project, session="diff").read_text(
+            encoding="utf-8"))
+
+    def test_back_reports_what_changed_since_the_handoff(self):
+        g = self.git_project()
+        relay.build_handoff(self.project, session="trip")
+        (self.project / "routes.py").write_text("router = 1\n", encoding="utf-8")
+        g("add", "routes.py")
+        g("commit", "-qm", "Add brightness route")
+        (self.project / "notes.md").write_text("todo\n", encoding="utf-8")
+        args = argparse.Namespace(cwd=str(self.project), session="trip", launch=False, resume=False)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_back(args)
+        text = relay.checkpoint(self.project, "trip").read_text(encoding="utf-8")
+        returned = text.split("## Returned to Claude Code", 1)[1]
+        for expected in ("Add brightness route", "routes.py", "notes.md"):
+            self.assertIn(expected, returned)
+            self.assertIn(expected, output.getvalue())
+
+    def test_status_is_readable_and_tells_you_when_claude_is_back(self):
+        relay.save_json(relay.STATE_FILE, {"five_hour_pct": 97, "resets_at": time.time() - 600,
+                                           "updated": time.time() - 60})
+        relay.build_handoff(self.project, session="shown")
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_status(argparse.Namespace(json=False, cwd=str(self.project)))
+        text = output.getvalue()
+        self.assertIn("97%", text)
+        self.assertIn("Claude is available again", text)
+        self.assertIn("Checkpoints  : 1", text)
+        self.assertIn("shown", text)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_status(argparse.Namespace(json=True, cwd=str(self.project)))
+        self.assertEqual(json.loads(output.getvalue())["state"]["five_hour_pct"], 97)
+
+    def test_ask_attaches_named_files_but_never_secrets(self):
+        (self.project / "src").mkdir()
+        (self.project / "src" / "routes.py").write_text("TOKEN = 'abcd1234efgh'\nrouter = 1\n", encoding="utf-8")
+        (self.project / ".env").write_text("SECRET=1\n", encoding="utf-8")
+        (self.project / "big.log").write_text("x" * (relay.ASK_FILE_LIMIT + 1), encoding="utf-8")
+        (self.other / "outside.py").write_text("print(1)\n", encoding="utf-8")
+        files = dict(relay.referenced_files(
+            "Review ./src/routes.py, .env, big.log, missing.py and ../other/outside.py", self.project))
+        self.assertEqual(list(files), ["src/routes.py"])
+        self.assertIn("router = 1", files["src/routes.py"])
+        self.assertNotIn("abcd1234efgh", files["src/routes.py"])
+        prompt = relay.ask_prompt("Review src/routes.py", list(files.items()), False)
+        self.assertIn("--- src/routes.py ---", prompt)
+
+    def test_ask_retries_without_tools_after_a_permission_denial(self):
+        denied = (False, "Antigravity returned an empty answer.\nno output produced: the command permission was denied")
+        args = argparse.Namespace(question="Review app.py", file=None, cwd=str(self.project), allow_edits=False,
+                                  timeout=5)
+        with patch.object(relay, "run_antigravity_headless", side_effect=[denied, (True, "Looks fine")]) as headless, \
+                contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
+            relay.cmd_ask(args)
+        self.assertEqual(headless.call_count, 2)
+        self.assertIn("Do not call any tools", headless.call_args_list[1].args[1])
+        self.assertIn("Looks fine", output.getvalue())
+
+    def test_config_command_validates_and_saves(self):
+        def config(*argv):
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                relay.main(["config"] + list(argv))
+            return output.getvalue()
+        self.assertIn("prepare_at", config())
+        config("mode", "manual")
+        config("prepare_at", "85")
+        config("redact", "off")
+        self.assertEqual(relay.load_json(relay.CONFIG_FILE, {}), {"mode": "manual", "prepare_at": 85, "redact": False})
+        self.assertEqual(config("mode").strip(), '"manual"')
+        for bad in (["mode", "sometimes"], ["prepare_at", "20"], ["warn_at", "95"], ["colour", "true"]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                config(*bad)
+        self.assertEqual(relay.config()["prepare_at"], 85)
+
 
 if __name__ == "__main__":
     unittest.main()
