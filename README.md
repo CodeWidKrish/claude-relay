@@ -191,15 +191,21 @@ flowchart TD
 ### 🗂 Life of a checkpoint
 
 ```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> Prepared: usage ≥ 90%
-    Prepared --> Refreshed: rate_limit hook or /handoff
-    Refreshed --> InAntigravity: agy -i opens on it
-    InAntigravity --> InAntigravity: Antigravity adds notes
-    InAntigravity --> Returned: relay.py back
-    Returned --> [*]: Claude Code reads it
-    Prepared --> Prepared: rebuilt (notes kept)
+flowchart LR
+    S((start)) -->|"usage ≥ 90%"| P[📝 Prepared]
+    P -->|"rebuilt, notes kept"| P
+    P -->|"rate_limit hook or /handoff"| R[⚡ Refreshed]
+    R -->|"agy -i opens on it"| A[🚀 In Antigravity]
+    A -->|"Antigravity adds notes"| A
+    A -->|"relay.py back"| B[↩️ Returned]
+    B -->|"Claude Code reads it"| E((done))
+
+    classDef file fill:#2b2560,stroke:#8f8be0,color:#fff
+    classDef agy fill:#3f6fe0,stroke:#2a4fae,color:#fff
+    classDef claude fill:#d9773f,stroke:#a8521f,color:#fff
+    class P,R file
+    class A agy
+    class B claude
 ```
 
 ### 🤝 `/ask-antigravity`, step by step
