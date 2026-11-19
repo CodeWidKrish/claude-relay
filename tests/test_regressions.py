@@ -543,6 +543,19 @@ class RelayRegressions(unittest.TestCase):
         self.assertIn("Codex 5h", output.getvalue())
         self.assertIn("55%", output.getvalue())
 
+    def test_codex_simulation_shows_prepare_then_switch_without_touching_real_state(self):
+        relay.save_json(relay.STATE_FILE, {"five_hour_pct": 42})
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_simulate(argparse.Namespace(cwd=str(self.project), live=False, agent="codex"))
+        text = output.getvalue()
+        self.assertIn("no action", text)
+        self.assertIn("checkpoint prepared", text)
+        self.assertIn("Dry run: Antigravity launch simulated", text)
+        self.assertIn("temporary checkpoint was removed", text)
+        self.assertFalse((self.project / ".relay").exists())
+        self.assertEqual(relay.load_json(relay.STATE_FILE, {}), {"five_hour_pct": 42})
+        self.assertFalse(relay.codex_state_file().exists())
+
 
 if __name__ == "__main__":
     unittest.main()

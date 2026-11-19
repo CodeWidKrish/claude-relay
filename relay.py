@@ -388,6 +388,9 @@ class CodexCLI:
     @classmethod
     def read_usage(cls, timeout=30):
         """Return the 5-hour and weekly usage of the signed-in Codex account, or None when unavailable."""
+        simulated = os.environ.get("RELAY_SIMULATED_CODEX_USAGE")  # set only by `relay.py simulate --agent codex`
+        if simulated:
+            return json.loads(simulated)
         argv = cls.argv("app-server")
         if not argv:
             return None
@@ -810,16 +813,19 @@ def cmd_codex_hook(_args):
     """Codex CLI hook entry point (Stop after every turn, PostModelRequest after every model request)."""
     data = read_stdin_json()
     event = str(data.get("hook_event_name") or "").lower()
+    simulated = bool(os.environ.get("RELAY_SIMULATED_CODEX_USAGE"))
     try:
         if event == "postmodelrequest" and data.get("status") != "failed":
             return  # the common case: return immediately
-        if event == "stop":
+        if event == "stop" and not simulated:
             cached = load_json(codex_state_file(), {})
             fresh = time.time() - float(cached.get("updated") or 0) < CODEX_CHECK_INTERVAL
             if fresh and not CodexCLI.limit_reached(cached) and (to_float(cached.get("pct")) or 0) < config()["prepare_at"]:
                 return  # usage was read moments ago and is well below the threshold
-        codex_check(data.get("cwd") or os.getcwd(), clean_session(data.get("session_id")), data.get("transcript_path"),
-                    data.get("last_assistant_message"), event or "hook")
+        message = codex_check(data.get("cwd") or os.getcwd(), clean_session(data.get("session_id")),
+                              data.get("transcript_path"), data.get("last_assistant_message"), event or "hook")
+        if simulated and message:
+            print(message, file=sys.stderr)
     except Exception as error:  # a hook must never break the Codex session
         log(f"codex-hook error: {error}")
     finally:
@@ -1105,8 +1111,9 @@ def cmd_back(args):
 def cmd_simulate(args):
     """Feed Relay exactly what Claude Code sends, so the switch can be shown without using the limit."""
     cwd = Path(args.cwd or os.getcwd()).resolve()
+    run = simulate_codex if getattr(args, "agent", "claude") == "codex" else simulate_hooks
     if args.live:
-        simulate_hooks(cwd, dict(os.environ))
+        run(cwd, dict(os.environ))
         return
     with tempfile.TemporaryDirectory(prefix="relay-demo-") as temporary:
         root = Path(temporary)
@@ -1116,8 +1123,27 @@ def cmd_simulate(args):
         save_json(state / "config.json", {**config(), "mode": "auto", "dry_run": True})
         env = dict(os.environ, RELAY_HOME=str(state), CLAUDE_CONFIG_DIR=str(root / "claude"),
                    RELAY_DRY_RUN="1")
-        simulate_hooks(workspace, env)
+        run(workspace, env)
     print("Simulation complete. The temporary checkpoint was removed.")
+
+
+def simulate_codex(cwd, env):
+    """Feed Relay the payloads Codex's hooks send, with simulated usage, so the switch can be shown on demand."""
+    cwd = str(cwd)
+    session = "relay-demo-" + uuid.uuid4().hex
+    me = [sys.executable, str(Path(__file__).resolve())]
+    reset = int(time.time()) + 2 * 3600
+    print("Simulating Codex CLI turns while 5-hour usage climbs (usage values are simulated) ...\n")
+    for pct in (45, 85, 92, 100):
+        usage = {"pct": pct, "resets": reset, "weekly_pct": 12, "weekly_resets": None, "plan": "plus",
+                 "reached": "rate_limit_reached" if pct >= 100 else None, "allowed": pct < 100}
+        payload = {"hook_event_name": "Stop", "session_id": session, "cwd": cwd, "transcript_path": None,
+                   "last_assistant_message": "Added Light.dim() with tests. Next: Room.apply_scene()."}
+        out = subprocess.run(me + ["codex-hook"], input=json.dumps(payload), capture_output=True, text=True,
+                             encoding="utf-8", cwd=cwd, env=dict(env, RELAY_SIMULATED_CODEX_USAGE=json.dumps(usage)))
+        result = out.stderr.strip() or "no action (below the 90% threshold)"
+        print(f"Codex turn ends at {pct:>3}%  ->  {usage_line(usage).split('  ', 1)[1]}\n    {result}")
+    print(f"\nHandoff file: {checkpoint(cwd, session)}")
 
 
 def simulate_hooks(cwd, env):
@@ -1556,6 +1582,7 @@ def main(argv=None):
     a.add_argument("--timeout", type=int, default=ASK_TIMEOUT)
     b = sub.add_parser("back"); b.add_argument("--launch", action="store_true"); b.add_argument("--cwd")
     s = sub.add_parser("simulate"); s.add_argument("--live", action="store_true"); s.add_argument("--cwd")
+    s.add_argument("--agent", choices=["claude", "codex"], default="claude")
     b.add_argument("--resume", action="store_true")
     b.add_argument("--to", choices=["claude", "codex"])
     preview = sub.add_parser("preview")
