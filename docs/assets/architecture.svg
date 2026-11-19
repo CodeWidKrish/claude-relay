@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-label="Claude Relay architecture: Claude Code sends usage to relay.py, which writes a redacted checkpoint and opens Antigravity; Antigravity's commits and notes come back to Claude Code with back --launch">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-label="Claude Relay architecture: Claude Code or Codex CLI sends usage to relay.py, which writes a redacted checkpoint and opens Antigravity; Antigravity's commits and notes come back to the source agent with back --launch">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0f0c29"/>
@@ -40,11 +40,11 @@
   <!-- Claude Code -->
   <rect x="50" y="135" width="280" height="190" rx="18" fill="#1d1a3f" stroke="#ff8a4c" stroke-width="2" class="breathe"/>
   <circle cx="84" cy="170" r="9" fill="#ff8a4c" filter="url(#glow)"/>
-  <text x="104" y="177" class="ct">Claude Code</text>
-  <text x="74" y="215" class="cl">status line · 5h usage</text>
-  <text x="74" y="243" class="cl">StopFailure: rate_limit</text>
-  <text x="74" y="271" class="cl">/handoff</text>
-  <text x="74" y="299" class="cl">/ask-antigravity</text>
+  <text x="104" y="177" class="ct">Claude Code · Codex</text>
+  <text x="74" y="215" class="cl">5h usage: status line /</text>
+  <text x="74" y="237" class="cl">  Codex app-server</text>
+  <text x="74" y="265" class="cl">limit hooks · /handoff</text>
+  <text x="74" y="293" class="cl">$relay-handoff · /ask-…</text>
 
   <!-- relay.py -->
   <rect x="460" y="112" width="280" height="236" rx="18" fill="#221d4a" stroke="url(#relay)" stroke-width="2.5"/>
@@ -110,6 +110,6 @@
       <animate attributeName="fill-opacity" values="0.12;0.12;0.55;0.55" keyTimes="0;0.75;0.76;1" dur="12s" repeatCount="indefinite"/>
     </rect>
     <circle cx="923" cy="425" r="13" fill="#5b8cff"/><text x="923" y="430" text-anchor="middle" class="num">4</text>
-    <text x="945" y="430" class="st">Reset: back to Claude</text>
+    <text x="945" y="430" class="st">Reset: back to your agent</text>
   </g>
 </svg>

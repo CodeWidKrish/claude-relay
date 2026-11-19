@@ -24,6 +24,7 @@
 
 **[🎬 Demo](#-see-it-in-30-seconds)** &nbsp;•&nbsp;
 **[🚀 Quick start](#-quick-start)** &nbsp;•&nbsp;
+**[🤖 Codex CLI](#-codex-cli--antigravity)** &nbsp;•&nbsp;
 **[🧠 How it works](#-how-it-works)** &nbsp;•&nbsp;
 **[🛡 Security](#-security-and-privacy)** &nbsp;•&nbsp;
 **[🛠 Commands](#-commands)** &nbsp;•&nbsp;
@@ -35,7 +36,7 @@
 <br>
 
 > [!NOTE]
-> **Claude Pro gives Claude Code a rolling 5-hour usage window.** When it runs out, Claude stops in the middle of your task. Opening another agent is easy. **Moving the context** (the goal, what's done, which files changed, what comes next) is the hard part. **Claude Relay does that for you**, and brings the work back when the limit resets.
+> **Claude Pro gives Claude Code a rolling 5-hour usage window, and ChatGPT plans give Codex CLI one too.** When it runs out, your agent stops in the middle of your task. Opening another agent is easy. **Moving the context** (the goal, what's done, which files changed, what comes next) is the hard part. **Claude Relay does that for you**, from **Claude Code or Codex CLI** to **Google Antigravity**, and brings the work back when the limit resets.
 
 ## 🎬 See it in 30 seconds
 
@@ -112,7 +113,9 @@ When the limit resets, one command hands the work **back to Claude**, with a sum
 | 📝 | **Prepares early** | The handoff is written at 90%, while Claude can still answer. At 100% it can't. |
 | ⚡ | **Automatic switch** | When the usage limit stops Claude, Antigravity opens with the task loaded and you get a desktop notification. |
 | 🖐 | **Manual switch** | Type `/handoff` at any time. Claude adds its own summary first. |
-| ↩️ | **Switch back** | `relay.py back --launch` reopens Claude Code with Antigravity's notes, plus the commits and files changed since the handoff. |
+| ↩️ | **Switch back** | `relay.py back --launch` reopens the agent the work came from with Antigravity's notes, plus the commits and files changed since the handoff. |
+| 🤖 | **Codex CLI too** | The same automatic and manual switch for OpenAI Codex CLI, through Codex's own hooks and app-server. [Details below](#-codex-cli--antigravity). |
+| 🚀 | **Faster Antigravity** | `config target_mode accept-edits` opens Antigravity with file edits approved automatically after a handoff |
 | 🔐 | **Secret redaction** | Keys, tokens and passwords are masked in every checkpoint and in attached files. |
 | 🧾 | **Diff in the checkpoint** | The next agent sees the uncommitted code itself, not just the file names. |
 | 🙈 | **Never committed** | `.relay/` writes its own `.gitignore`, so checkpoints and answers stay out of git. |
@@ -135,6 +138,8 @@ Relay now hands off from **OpenAI Codex CLI** too, automatically at the limit, u
 | 📊 | **Usage without hooks** | `relay.py watch --agent codex` polls usage from a terminal and switches at the limit. `relay.py status --agent codex` shows the 5-hour and weekly usage. |
 | 🛡 | **Safe install** | `install --codex` merges into `~/.codex/hooks.json` and keeps your own hooks; `uninstall` removes only Relay's. Hooks run in the background so Codex never waits on them. |
 | 🧪 | **66 tests**, up from 54 | A fake Codex app-server speaks the same protocol, so the tests run without an account |
+| 🚀 | **Faster, focused Antigravity** | `config target_mode accept-edits` approves file edits automatically, and the launch instruction keeps Antigravity on your project instead of Relay's own files |
+| 🪟 | **Windows paths with spaces** | npm-installed `.cmd` launchers (such as `codex.cmd` under `C:\Users\First Last\`) now start correctly; found and fixed during live testing |
 
 <details>
 <summary><b>📜 v1.5.0: safer, richer handoffs</b></summary>
@@ -177,6 +182,96 @@ Relay now hands off from **OpenAI Codex CLI** too, automatically at the limit, u
 - Python 3.8 is covered in CI.
 
 </details>
+
+## 🤖 Codex CLI → Antigravity
+
+Relay gives **OpenAI Codex CLI** the same switch as Claude Code, built only on Codex's own documented features: [hooks](https://developers.openai.com/codex/hooks), skills and the app-server usage API.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as You
+    participant C as Codex CLI
+    participant R as relay.py
+    participant S as Codex app-server
+    participant A as Antigravity CLI
+    U->>C: work on a task
+    C->>R: Stop hook after every turn (runs in the background)
+    R->>S: account/rateLimits/read
+    S-->>R: 5-hour 92% · weekly 12%
+    R->>R: write the checkpoint (secrets redacted, diff included)
+    C->>R: next turn, limit reached (Stop or failed PostModelRequest)
+    R->>A: agy -i "Read .relay/…/HANDOFF.md and continue…"
+    A->>A: finishes the task, adds Progress since handoff
+    U->>R: relay.py back --launch (after the reset)
+    R->>C: codex "Read .relay/HANDOFF.md… then continue"
+```
+
+### Set it up
+
+```bash
+python relay.py install --mode auto --threshold 90 --codex
+python relay.py config target_mode accept-edits   # optional: fewer prompts in Antigravity
+codex                                             # type /hooks and approve the two Claude Relay hooks
+```
+
+| You want to… | Do this |
+|---|---|
+| See Codex usage | `python relay.py status --agent codex` or `python relay.py watch --agent codex --once` |
+| Switch now, from inside Codex | Type **`$relay-handoff`** |
+| Switch now, from a terminal | `python relay.py handoff --agent codex --launch` |
+| Switch automatically | Nothing: the `Stop` hook switches when the 5-hour limit is reached |
+| Watch usage without hooks | `python relay.py watch --agent codex` |
+| Try the automatic switch on demand | `python relay.py simulate --agent codex` (add `--live` to really open Antigravity) |
+| Come back after the reset | `python relay.py back --launch` reopens Codex |
+
+### Verified live on Windows 11 (Codex CLI 0.166.0, Antigravity CLI 1.5.12)
+
+| Step | What happened |
+|---|---|
+| Live usage | Relay read the real account through the app-server: 5-hour 0–1%, weekly 3%, Plus plan |
+| Hooks | Both hooks installed, approved with `/hooks` and shown as **Trusted** |
+| Hook after a real turn | Codex finished a turn at 11:15 and Relay's `Stop` hook read usage at 11:15:41 |
+| Manual switch | `$relay-handoff` wrote the checkpoint and opened Antigravity, which implemented `Light.dim()` (6/6 tests) |
+| Automatic switch | With usage simulated to 92% then 100%, Relay prepared the checkpoint and opened Antigravity, which implemented `Room.apply_scene()` (10/10 tests) |
+| Back to Codex | `back --launch` listed Antigravity's changes and opened Codex, which reported both tasks done |
+
+The only step not shown live is a real Codex account reaching 100%; that path is driven by the same hook and is covered by simulation and tests.
+
+<table>
+<tr>
+<td width="50%" valign="top" align="center">
+<b>🩺 doctor finds Codex and its hooks</b><br><br>
+<a href="docs/images/v1.6.0-codex-doctor.png"><img src="docs/images/v1.6.0-codex-doctor.png" alt="relay.py doctor: Claude Code 2.1.327, Antigravity 1.5.12, Codex CLI 0.166.0, Codex Stop and PostModelRequest hooks installed, All good"></a>
+</td>
+<td width="50%" valign="top" align="center">
+<b>✅ Hooks trusted inside Codex</b><br><br>
+<a href="docs/images/v1.6.0-codex-hooks-trusted.png"><img src="docs/images/v1.6.0-codex-hooks-trusted.png" alt="Codex /hooks screen: Stop hook Claude Relay checking Codex usage, enabled, async, trusted, from ~/.codex/hooks.json"></a>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top" align="center">
+<b>📈 Live Codex usage</b><br><br>
+<a href="docs/images/v1.6.0-codex-usage.png"><img src="docs/images/v1.6.0-codex-usage.png" alt="relay.py watch and status with the Codex 5-hour and weekly usage read live from the Codex app-server"></a>
+</td>
+<td width="50%" valign="top" align="center">
+<b>⚡ Automatic switch at the limit</b><br><br>
+<a href="docs/images/v1.6.0-codex-auto-switch.png"><img src="docs/images/v1.6.0-codex-auto-switch.png" alt="Simulated Codex turns at 45, 85, 92 and 100 percent: no action, no action, checkpoint prepared, Antigravity launch"></a>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top" align="center">
+<b>🚀 Antigravity continues the Codex task</b><br><br>
+<a href="docs/images/v1.6.0-codex-antigravity.png"><img src="docs/images/v1.6.0-codex-antigravity.png" alt="Antigravity CLI reading the Codex handoff, implementing Room.apply_scene with tests, 10 tests passing, notes added"></a>
+</td>
+<td width="50%" valign="top" align="center">
+<b>↩️ Back to Codex</b><br><br>
+<a href="docs/images/v1.6.0-codex-back.png"><img src="docs/images/v1.6.0-codex-back.png" alt="relay.py back listing the files Antigravity changed, then Codex reading the handoff and reporting that all tasks are done"></a>
+</td>
+</tr>
+</table>
+
+<sub>Real output from the live test run. Home-folder paths are shortened and the account email is removed; the Antigravity transcript is an excerpt.</sub>
 
 ## 🧠 How it works
 
@@ -456,10 +551,10 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 <sub>Click any screenshot to open it full size.</sub>
 
 <details>
-<summary><b>🧪 Test run (v1.5.0 capture, 54 tests; v1.6.0 has 66)</b></summary>
+<summary><b>🧪 All 66 tests passing (v1.6.0)</b></summary>
 <br>
 
-![28 end-to-end tests and 26 regression tests passing](docs/images/v1.5.0-tests.png)
+![28 end-to-end tests and 38 regression tests passing, including the Codex hook, install, simulation and Windows path tests](docs/images/v1.6.0-tests.png)
 
 </details>
 
@@ -535,7 +630,7 @@ Run both test scripts for **66 scenarios**. The tests simulate Claude hook paylo
 </details>
 
 > [!NOTE]
-> **v1.5.0 live check:** Windows 11, Python 3.14, Claude Code 2.1.221 and Antigravity CLI 1.5.10. `doctor` and three live `ask` calls to Antigravity, all answered, were run against the real CLIs. The automatic switch and the return trip were run as dry runs, so the full signed-in round trip still needs the [smoke test](#live-round-trip-smoke-test) below.
+> **v1.6.0 live check:** Windows 11, Python 3.14, Claude Code 2.1.327, Codex CLI 0.166.0 and Antigravity CLI 1.5.10–1.5.12. The full **Codex → Antigravity → Codex** round trip ran live with real windows: a real Codex hook, a manual `$relay-handoff`, an automatic switch with simulated usage, Antigravity finishing both tasks, and `back` reopening Codex ([details](#-codex-cli--antigravity)). For Claude Code, `doctor` and three live `ask` calls were run against the real CLIs; its automatic switch and return trip were run as dry runs.
 
 ## 🧯 Troubleshooting
 
@@ -572,6 +667,11 @@ Run both test scripts for **66 scenarios**. The tests simulate Claude hook paylo
 <details>
 <summary><b>Can I use Antigravity without switching away from Claude?</b></summary>
 <br>Yes: <code>/ask-antigravity &lt;request&gt;</code>. Claude sends the request to Antigravity's headless mode (<code>agy -p</code>) and gets the answer back in the same session. Antigravity runs in <b>plan mode</b> by default, and the slash command asks Claude to confirm before applying suggestions.
+</details>
+
+<details>
+<summary><b>Does it work with OpenAI Codex CLI?</b></summary>
+<br>Yes, since v1.6.0. Run <code>install --codex</code>, then approve Relay's two hooks once with <code>/hooks</code> inside Codex. Relay reads Codex's 5-hour usage from its app-server after every turn and switches to Antigravity at the limit, or when you type <code>$relay-handoff</code>. <code>back --launch</code> returns the work to Codex.
 </details>
 
 <details>
