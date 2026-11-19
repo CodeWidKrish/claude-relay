@@ -8,7 +8,7 @@
 
 <a href="https://github.com/CodeWidKrish/claude-relay/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/CodeWidKrish/claude-relay/tests.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI" alt="CI status"></a>
 <a href="#-whats-new-in-v160-codex-cli-support"><img src="https://img.shields.io/badge/version-1.6.0-ff8a4c?style=for-the-badge" alt="Version 1.6.0"></a>
-<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-64%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="64 test scenarios"></a>
+<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-65%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="65 test scenarios"></a>
 <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Codex%20CLI-7928CA?style=for-the-badge" alt="Agents: Claude Code and Codex CLI">
 <img src="https://img.shields.io/badge/python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
 <img src="https://img.shields.io/badge/dependencies-zero-8957e5?style=for-the-badge" alt="Zero dependencies">
@@ -47,7 +47,7 @@
 
 <br>
 
-<img src="docs/assets/stats.svg" alt="64 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
+<img src="docs/assets/stats.svg" alt="65 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
 
 ## 💡 Why Relay?
 
@@ -134,7 +134,7 @@ Relay now hands off from **OpenAI Codex CLI** too, automatically at the limit, u
 | ↩️ | **Back to Codex** | `relay.py back --launch` returns to whichever agent the work came from |
 | 📊 | **Usage without hooks** | `relay.py watch --agent codex` polls usage from a terminal and switches at the limit. `relay.py status --agent codex` shows the 5-hour and weekly usage. |
 | 🛡 | **Safe install** | `install --codex` merges into `~/.codex/hooks.json` and keeps your own hooks; `uninstall` removes only Relay's. Hooks run in the background so Codex never waits on them. |
-| 🧪 | **64 tests**, up from 54 | A fake Codex app-server speaks the same protocol, so the tests run without an account |
+| 🧪 | **65 tests**, up from 54 | A fake Codex app-server speaks the same protocol, so the tests run without an account |
 
 <details>
 <summary><b>📜 v1.5.0: safer, richer handoffs</b></summary>
@@ -381,6 +381,7 @@ python /path/to/claude-relay/relay.py simulate --live   # really opens Antigravi
 | `prepare_at` | `90` | Handoff is written in advance (50–99) |
 | `target_cmd` | `agy` | Antigravity CLI command |
 | `target_model` | `""` | Model inside Antigravity, exactly as listed by `agy models` |
+| `target_mode` | `default` | Antigravity mode after a handoff: `default` (asks before edits), `accept-edits` (edits approved automatically), `auto` or `plan` |
 | `color` | `true` | Coloured status line (also honours `NO_COLOR`) |
 | `redact` | `true` | Mask keys, tokens and passwords in checkpoints and in files attached to `ask` |
 | `diff_lines` | `200` | Lines of uncommitted diff copied into a checkpoint (`0` turns it off) |
@@ -455,7 +456,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 <sub>Click any screenshot to open it full size.</sub>
 
 <details>
-<summary><b>🧪 Test run (v1.5.0 capture, 54 tests; v1.6.0 has 64)</b></summary>
+<summary><b>🧪 Test run (v1.5.0 capture, 54 tests; v1.6.0 has 65)</b></summary>
 <br>
 
 ![28 end-to-end tests and 26 regression tests passing](docs/images/v1.5.0-tests.png)
@@ -488,7 +489,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 
 ## ✅ Tested conditions
 
-Run both test scripts for **64 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers. CI runs them on Windows, macOS and Linux, plus Python 3.8 on Ubuntu.
+Run both test scripts for **65 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers. CI runs them on Windows, macOS and Linux, plus Python 3.8 on Ubuntu.
 
 <details>
 <summary><b>🧪 Show all edge cases covered</b></summary>
@@ -548,6 +549,7 @@ Run both test scripts for **64 scenarios**. The tests simulate Claude hook paylo
 | `doctor` says FIX | Run the command it suggests, then `doctor` again |
 | `agy` not found | Install the Antigravity CLI and open a **new** terminal so PATH updates |
 | Antigravity shows the setup screen | First launch only: finish setup, then run `simulate --live` again |
+| Antigravity keeps asking for permission | Run `python relay.py config target_mode accept-edits` so file edits are approved automatically after a handoff |
 | `ask` says Antigravity returned an empty answer | Name the files you mean in the question (for example `src/app.py`) so Relay attaches them |
 | Nothing happens at the limit | Run `python relay.py status` and check recent activity. Make sure `mode` is `auto`. |
 | Hooks don't run on Windows | Move the folder to a path without spaces (e.g. `C:\claude-relay`) and run `install` again |
@@ -637,7 +639,7 @@ claude-relay/
 ├── relay.py                  # the whole tool (standard library only)
 ├── tests/
 │   ├── test_relay.py         # 28 end-to-end and edge-case tests
-│   ├── test_regressions.py   # 36 regression tests (sessions, locks, installs, ask, redaction, return, Codex)
+│   ├── test_regressions.py   # 37 regression tests (sessions, locks, installs, ask, redaction, return, Codex)
 │   └── sample_output.txt
 ├── docs/
 │   ├── assets/               # banner, demo GIF, architecture, stats, meter and footer

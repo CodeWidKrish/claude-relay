@@ -543,6 +543,24 @@ class RelayRegressions(unittest.TestCase):
         self.assertIn("Codex 5h", output.getvalue())
         self.assertIn("55%", output.getvalue())
 
+    def test_antigravity_launch_is_focused_and_mode_is_configurable(self):
+        path = relay.build_handoff(self.project, session="focus")
+        command = relay.Antigravity.interactive(relay.config(), self.project, path)
+        prompt = command[-1]
+        self.assertEqual(command[:2], ["agy", "-i"], "default mode adds no --mode flag")
+        self.assertIn(".relay/sessions/", prompt)
+        self.assertIn("do not need to inspect Relay", prompt)
+        self.assertIn("Progress since handoff", prompt)
+        self.assertNotIn('"', prompt, "the prompt must survive cmd.exe and PowerShell quoting")
+        self.assertNotIn("\n", prompt)
+        with contextlib.redirect_stdout(io.StringIO()):
+            relay.main(["config", "target_mode", "accept-edits"])
+        command = relay.Antigravity.interactive(relay.config(), self.project, path)
+        self.assertEqual(command[:4], ["agy", "--mode", "accept-edits", "-i"])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()):
+            relay.main(["config", "target_mode", "yolo"])
+
     def test_codex_simulation_shows_prepare_then_switch_without_touching_real_state(self):
         relay.save_json(relay.STATE_FILE, {"five_hour_pct": 42})
         with contextlib.redirect_stdout(io.StringIO()) as output:

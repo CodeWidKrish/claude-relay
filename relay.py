@@ -19,7 +19,7 @@ Commands
   relay.py watch --agent codex    poll Codex usage and switch at the limit without hooks
   relay.py simulate [--live]      demo the automatic switch without using up your limit
   relay.py status [--json] [--agent codex]   usage, reset countdown, checkpoints in this project, recent log
-  relay.py config [KEY [VALUE]]   show or change a setting (mode, prepare_at, target_model, ...)
+  relay.py config [KEY [VALUE]]   show or change a setting (mode, prepare_at, target_model, target_mode, ...)
 """
 import argparse
 import datetime as dt
@@ -68,6 +68,7 @@ DEFAULT_CONFIG = {
     "prepare_at": 90,        # handoff written in advance (while Claude can still answer)
     "target_cmd": "agy",     # Antigravity CLI
     "target_model": "",      # e.g. "Claude Sonnet 4.6" (exact name from `agy models`)
+    "target_mode": "default",  # Antigravity mode after a handoff: default, accept-edits, auto or plan
     "color": True,
     "dry_run": False,        # print launch commands instead of running them
     "redact": True,          # mask API keys, tokens and passwords in checkpoints
@@ -628,8 +629,13 @@ class Antigravity:
     @classmethod
     def interactive(cls, cfg, cwd, path):
         relative = path.relative_to(Path(cwd).resolve()).as_posix()
-        prompt = f"Read {relative} and continue the task. Add short notes under Progress since handoff."
-        return cls.command(cfg) + ["-i", prompt]
+        # One line, no double quotes: it has to survive cmd.exe, PowerShell and POSIX shells unchanged.
+        prompt = (f"Read {relative} and continue the coding task it describes, starting from its next steps and task "
+                  "list. Work on the project itself: that file is a handoff note written by Claude Relay, so you "
+                  "do not need to inspect Relay's own code or its setup notes. When you stop, add short notes under "
+                  "Progress since handoff in that file.")
+        mode = str(cfg.get("target_mode") or "default")
+        return cls.command(cfg) + (["--mode", mode] if mode != "default" else []) + ["-i", prompt]
 
 
 def open_in_new_terminal(cmd, cwd, cfg):
@@ -1221,7 +1227,7 @@ def cmd_doctor(_args):
     else:
         print("\n  No usage data yet: send one message in Claude Code (Pro/Max plans only).")
     print(f"  Mode: {cfg['mode']} | prepare at {cfg['prepare_at']}% | model in Antigravity: "
-          f"{cfg['target_model'] or 'Antigravity default'}")
+          f"{cfg['target_model'] or 'Antigravity default'} | Antigravity mode: {cfg.get('target_mode') or 'default'}")
     print("\nAll good." if ok_all else "\nFix the items marked FIX, then run doctor again.")
 
 
@@ -1282,6 +1288,7 @@ CONFIG_RULES = {
     "prepare_at": ("int", (50, 99)),
     "target_cmd": ("text", None),
     "target_model": ("text", None),
+    "target_mode": ("choice", ("default", "accept-edits", "auto", "plan")),
     "color": ("bool", None),
     "redact": ("bool", None),
     "diff_lines": ("int", (0, 5000)),
