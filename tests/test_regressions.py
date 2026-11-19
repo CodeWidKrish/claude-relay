@@ -31,12 +31,14 @@ class RelayRegressions(unittest.TestCase):
         paths = patch.multiple(relay, STATE_DIR=state, STATE_FILE=state / "state.json",
                                CONFIG_FILE=state / "config.json", LOG_FILE=state / "relay.log",
                                CLAUDE_DIR=claude, CLAUDE_SETTINGS=claude / "settings.json",
-                               CLAUDE_PROJECTS=claude / "projects")
+                               CLAUDE_PROJECTS=claude / "projects", CODEX_DIR=root / "codex")
         paths.start()
         self.addCleanup(paths.stop)
+        self.root = root
         # Relay settings exported in the developer's shell must not change test results.
         clean = {k: v for k, v in os.environ.items()
-                 if k not in ("RELAY_DRY_RUN", "RELAY_HOME", "RELAY_PROMPT_FILE", "CLAUDE_CONFIG_DIR", "NO_COLOR")}
+                 if k not in ("RELAY_DRY_RUN", "RELAY_HOME", "RELAY_PROMPT_FILE", "CLAUDE_CONFIG_DIR", "NO_COLOR",
+                              "CODEX_HOME")}
         environ = patch.dict(os.environ, clean, clear=True)
         environ.start()
         self.addCleanup(environ.stop)
@@ -372,6 +374,174 @@ class RelayRegressions(unittest.TestCase):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 config(*bad)
         self.assertEqual(relay.config()["prepare_at"], 85)
+
+    # ---- v1.6: Codex CLI → Antigravity ------------------------------------------------------------
+    FAKE_CODEX = (
+        "import json, os, sys\n"
+        "pct = int(os.environ.get('FAKE_CODEX_PCT', '10'))\n"
+        "reached = os.environ.get('FAKE_CODEX_REACHED') or None\n"
+        "for line in sys.stdin:\n"
+        "    msg = json.loads(line)\n"
+        "    if msg.get('method') == 'initialize':\n"
+        "        print(json.dumps({'id': msg['id'], 'result': {'codexHome': '.', 'platformFamily': 'x',"
+        " 'platformOs': 'x', 'userAgent': 'fake'}}), flush=True)\n"
+        "    elif msg.get('method') == 'account/rateLimits/read':\n"
+        "        print(json.dumps({'id': msg['id'], 'result': {'ordinaryUsageAllowed': True, 'rateLimits': {\n"
+        "            'planType': 'plus', 'limitId': 'codex', 'rateLimitReachedType': reached,\n"
+        "            'primary': {'usedPercent': pct, 'windowDurationMins': 300, 'resetsAt': 2000000000},\n"
+        "            'secondary': {'usedPercent': 7, 'windowDurationMins': 10080, 'resetsAt': 2000500000}}}}),"
+        " flush=True)\n")
+
+    def fake_codex(self, pct, reached=""):
+        """Put a fake `codex` on PATH whose app-server answers rate-limit reads like the real one."""
+        folder = self.root / "fakebin"
+        folder.mkdir(exist_ok=True)
+        (folder / "fake_codex.py").write_text(self.FAKE_CODEX, encoding="utf-8")
+        if os.name == "nt":
+            (folder / "codex.cmd").write_text(f'@"{sys.executable}" "%~dp0fake_codex.py" %*\r\n', encoding="utf-8")
+        else:
+            shim = folder / "codex"
+            shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/fake_codex.py" "$@"\n')
+            shim.chmod(0o755)
+        os.environ["PATH"] = str(folder) + os.pathsep + os.environ.get("PATH", "")
+        os.environ["FAKE_CODEX_PCT"] = str(pct)
+        os.environ["FAKE_CODEX_REACHED"] = reached
+
+    def codex_hook(self, payload):
+        with patch.object(relay, "read_stdin_json", return_value=payload), patch.object(relay, "notify"), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_codex_hook(None)
+        return output.getvalue()
+
+    def test_codex_usage_is_read_from_the_app_server(self):
+        self.fake_codex(42)
+        usage = relay.CodexCLI.read_usage()
+        self.assertEqual((usage["pct"], usage["weekly_pct"], usage["plan"]), (42, 7, "plus"))
+        self.assertEqual(usage["resets"], 2000000000)
+        self.assertFalse(relay.CodexCLI.limit_reached(usage))
+        os.environ["PATH"] = ""
+        self.assertIsNone(relay.CodexCLI.read_usage())
+
+    def test_codex_stop_hook_prepares_then_switches_once(self):
+        stop = {"hook_event_name": "Stop", "session_id": "codex-1", "cwd": str(self.project),
+                "last_assistant_message": "Added the dim endpoint. Next: tests."}
+        with patch.object(relay, "open_in_new_terminal", return_value=True) as launcher:
+            self.fake_codex(30)
+            self.assertEqual(self.codex_hook(stop).strip(), "{}")
+            self.assertFalse(relay.checkpoint(self.project, "codex-1").exists())
+            # right after a low reading, the next turn skips the usage read entirely
+            with patch.object(relay.CodexCLI, "read_usage", side_effect=AssertionError("throttled")):
+                self.assertEqual(self.codex_hook(stop).strip(), "{}")
+            relay.save_json(relay.codex_state_file(), {})  # pretend the throttle window has passed
+            self.fake_codex(92)
+            self.codex_hook(stop)
+            text = relay.checkpoint(self.project, "codex-1").read_text(encoding="utf-8")
+            self.assertIn("Codex CLI → Antigravity", text)
+            self.assertIn("Added the dim endpoint", text)
+            self.assertEqual(launcher.call_count, 0)
+            self.fake_codex(100)
+            self.codex_hook(stop)
+            self.codex_hook(stop)
+        self.assertEqual(launcher.call_count, 1, "one Antigravity window per limit")
+        self.assertIn("limit reached", relay.checkpoint(self.project, "codex-1").read_text(encoding="utf-8"))
+
+    def test_codex_model_request_hook_is_cheap_and_catches_failures(self):
+        ok = {"hook_event_name": "PostModelRequest", "status": "completed", "cwd": str(self.project)}
+        with patch.object(relay.CodexCLI, "read_usage", side_effect=AssertionError("must not read usage")):
+            self.assertEqual(self.codex_hook(ok), "")
+        self.fake_codex(61, "rate_limit_reached")
+        failed = dict(ok, status="failed", error="usage limit reached", session_id="codex-2")
+        with patch.object(relay, "open_in_new_terminal", return_value=True) as launcher:
+            self.codex_hook(failed)
+        self.assertEqual(launcher.call_count, 1)
+        self.assertIn("rate_limit_reached", relay.checkpoint(self.project, "codex-2").read_text(encoding="utf-8"))
+
+    def test_manual_mode_prepares_but_never_launches(self):
+        relay.save_json(relay.CONFIG_FILE, {"mode": "manual"})
+        self.fake_codex(100)
+        with patch.object(relay, "open_in_new_terminal", return_value=True) as launcher:
+            self.codex_hook({"hook_event_name": "Stop", "session_id": "codex-3", "cwd": str(self.project)})
+        self.assertEqual(launcher.call_count, 0)
+        self.assertTrue(relay.checkpoint(self.project, "codex-3").exists())
+
+    def test_codex_session_file_is_summarised(self):
+        rollout = self.root / "rollout.jsonl"
+        records = [
+            {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "<environment_context>ignored</environment_context>"}]}},
+            {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "Build scenes for the smart home"}]}},
+            {"type": "response_item", "payload": {"type": "function_call", "name": "shell",
+                                                  "arguments": json.dumps({"command": ["pytest", "-q"]})}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "apply_patch",
+                                                  "input": "*** Begin Patch\n*** Update File: smart_home.py\n*** End Patch"}},
+            {"type": "response_item", "payload": {"type": "function_call", "name": "update_plan", "arguments": json.dumps(
+                {"plan": [{"step": "Add movie scene", "status": "completed"},
+                          {"step": "Add focus scene", "status": "in_progress"}]})}},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "Movie scene done."}]}},
+            "not json",
+        ]
+        rollout.write_text("\n".join(r if isinstance(r, str) else json.dumps(r) for r in records), encoding="utf-8")
+        info = relay.parse_codex_transcript(rollout)
+        self.assertEqual(info["first_request"], "Build scenes for the smart home")
+        self.assertEqual((info["commands"], info["files_changed"]), (["pytest -q"], ["smart_home.py"]))
+        self.assertEqual(info["todos"][1], {"content": "Add focus scene", "status": "in_progress"})
+        self.assertEqual(info["last_answer"], "Movie scene done.")
+        text = relay.build_handoff(self.project, rollout, session="codex-4", source="codex").read_text(encoding="utf-8")
+        for expected in ("Codex CLI → Antigravity", "Codex limit resets", "[ ] Add focus scene", "smart_home.py"):
+            self.assertIn(expected, text)
+
+    def test_codex_install_merges_and_uninstall_restores(self):
+        relay.save_json(relay.CODEX_DIR / "hooks.json",
+                        {"description": "mine", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "my-stop"}]}]}})
+        args = argparse.Namespace(mode=None, threshold=None, model=None, codex=True)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_install(args)
+            relay.cmd_install(args)
+        self.assertIn("/hooks", output.getvalue())
+        data = relay.load_json(relay.CODEX_DIR / "hooks.json", {})
+        self.assertEqual(data["description"], "mine")
+        self.assertEqual(len(data["hooks"]["Stop"]), 2, "user hook kept, Relay hook added once")
+        self.assertEqual(len(data["hooks"]["PostModelRequest"]), 1)
+        relay_hook = data["hooks"]["Stop"][1]["hooks"][0]
+        self.assertIn("codex-hook", relay_hook["command"])
+        self.assertIn("codex-hook", relay_hook["commandWindows"])
+        skill = relay.CODEX_DIR / "skills" / "relay-handoff" / "SKILL.md"
+        self.assertIn("handoff --agent codex", skill.read_text(encoding="utf-8"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            relay.cmd_uninstall(None)
+        self.assertEqual(relay.load_json(relay.CODEX_DIR / "hooks.json", {}),
+                         {"description": "mine", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "my-stop"}]}]}})
+        self.assertFalse(skill.exists())
+
+    def test_invalid_codex_hooks_file_stops_install_before_any_change(self):
+        relay.save_text(relay.CODEX_DIR / "hooks.json", "{ broken")
+        with self.assertRaises(ValueError):
+            relay.cmd_install(argparse.Namespace(mode=None, threshold=None, model=None, codex=True))
+        self.assertFalse(relay.CLAUDE_SETTINGS.exists())
+        self.assertEqual((relay.CODEX_DIR / "hooks.json").read_text(encoding="utf-8"), "{ broken")
+
+    def test_back_returns_to_codex_when_the_work_came_from_codex(self):
+        relay.build_handoff(self.project, session="codex-5", source="codex")
+        args = argparse.Namespace(cwd=str(self.project), session="codex-5", launch=True, resume=False, to=None)
+        with patch.object(relay, "open_in_new_terminal", return_value=True) as launcher, \
+                contextlib.redirect_stdout(io.StringIO()):
+            relay.cmd_back(args)
+        command = launcher.call_args.args[0]
+        self.assertEqual(command[0], "codex")
+        self.assertIn("Returned to Codex CLI", command[-1])
+        self.assertIn("## Returned to Codex CLI", relay.checkpoint(self.project, "codex-5").read_text(encoding="utf-8"))
+
+    def test_manual_codex_handoff_and_watch(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            relay.main(["handoff", "--agent", "codex", "--cwd", str(self.project)])
+        self.assertIn("Codex CLI → Antigravity", (self.project / ".relay" / "HANDOFF.md").read_text(encoding="utf-8"))
+        self.fake_codex(55)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.main(["watch", "--agent", "codex", "--once", "--cwd", str(self.project)])
+        self.assertIn("Codex 5h", output.getvalue())
+        self.assertIn("55%", output.getvalue())
 
 
 if __name__ == "__main__":

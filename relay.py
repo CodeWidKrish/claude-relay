@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """
-Claude Relay - continue your Claude Code work in Google Antigravity when the
-Claude Pro 5-hour session limit is reached (automatically or manually), then
-come back to Claude Code when the limit resets.
+Claude Relay - continue your Claude Code or Codex CLI work in Google Antigravity when the
+5-hour usage limit is reached (automatically or manually), then come back when it resets.
 
 Pure Python standard library (3.8+). Windows, macOS and Linux.
 
 Commands
   relay.py doctor                 check that everything needed is installed
-  relay.py install [--mode auto|manual] [--threshold 90] [--model "Claude Sonnet 4.6"]
-  relay.py uninstall              remove Relay from Claude Code (restores the settings backup)
+  relay.py install [--mode auto|manual] [--threshold 90] [--model "Claude Sonnet 4.6"] [--codex]
+  relay.py uninstall              remove Relay from Claude Code (and Codex, if installed there)
   relay.py statusline             used by Claude Code's status line (JSON on stdin)
   relay.py on-limit               used by Claude Code's StopFailure hook (JSON on stdin)
-  relay.py handoff [--launch]     manual switch: write the handoff (and open Antigravity)
+  relay.py codex-hook             used by Codex CLI's Stop and PostModelRequest hooks (JSON on stdin)
+  relay.py handoff [--launch] [--agent claude|codex]   manual switch: write the handoff (and open Antigravity)
   relay.py launch                 open Antigravity on the existing handoff
   relay.py ask "question" | --file F   ask Antigravity from inside a Claude Code session
-  relay.py back [--launch]        after the reset: hand the work (and what changed) back to Claude Code
+  relay.py back [--launch] [--to claude|codex]   after the reset: hand the work (and what changed) back
+  relay.py watch --agent codex    poll Codex usage and switch at the limit without hooks
   relay.py simulate [--live]      demo the automatic switch without using up your limit
-  relay.py status [--json]        usage, reset countdown, checkpoints in this project, recent log
+  relay.py status [--json] [--agent codex]   usage, reset countdown, checkpoints in this project, recent log
   relay.py config [KEY [VALUE]]   show or change a setting (mode, prepare_at, target_model, ...)
 """
 import argparse
@@ -45,7 +46,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 IS_WIN = platform.system() == "Windows"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
@@ -55,8 +56,11 @@ LOG_FILE = STATE_DIR / "relay.log"
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 CLAUDE_SETTINGS = CLAUDE_DIR / "settings.json"
 CLAUDE_PROJECTS = CLAUDE_DIR / "projects"
+CODEX_DIR = Path(os.environ.get("CODEX_HOME", HOME / ".codex"))
 HANDOFF_DIR, HANDOFF_NAME = ".relay", "HANDOFF.md"
 SWITCH_COOLDOWN = 15 * 60  # seconds; StopFailure can fire many times for one limit
+CODEX_CHECK_INTERVAL = 45  # seconds between Codex usage reads triggered by the Stop hook
+AGENTS = {"claude": ("Claude Code", "Claude"), "codex": ("Codex CLI", "Codex")}
 
 DEFAULT_CONFIG = {
     "mode": "auto",          # auto: switch when the limit is hit; manual: only on /handoff
@@ -306,6 +310,161 @@ def parse_transcript(path):
     return info
 
 
+def _codex_text(content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(block["text"] for block in content
+                     if isinstance(block, dict) and block.get("type") in ("input_text", "output_text", "text")
+                     and isinstance(block.get("text"), str))
+
+
+def _patch_files(patch):
+    return re.findall(r"^\*\*\* (?:Update|Add|Delete) File: (.+?)\s*$", patch or "", re.M)
+
+
+def parse_codex_transcript(path, last_message=None):
+    """Same summary as parse_transcript, from a Codex session file (JSON lines, one record per line)."""
+    info = {"first_request": "", "recent_requests": [], "last_answer": "",
+            "files_changed": [], "commands": [], "todos": []}
+    requests, commands, files = deque(maxlen=5), deque(maxlen=8), OrderedDict()
+
+    def touch(name):
+        files[name] = None
+        files.move_to_end(name)
+        if len(files) > 25:
+            files.popitem(last=False)
+
+    for ev in transcript_events(path):
+        item = ev.get("payload") if isinstance(ev.get("payload"), dict) else ev
+        kind = item.get("type")
+        if kind == "message":
+            text = _codex_text(item.get("content")).strip()
+            if item.get("role") == "user" and text and not text.startswith("<"):
+                info["first_request"] = info["first_request"] or text
+                requests.append(text)
+            elif item.get("role") == "assistant" and text:
+                info["last_answer"] = text
+        elif kind in ("function_call", "custom_tool_call"):
+            raw = item.get("arguments") if kind == "function_call" else item.get("input")
+            try:
+                args = json.loads(raw) if isinstance(raw, str) and raw.strip().startswith("{") else raw
+            except ValueError:
+                args = raw
+            name = item.get("name")
+            if name in ("shell", "shell_command", "exec_command", "local_shell") and isinstance(args, dict):
+                cmd = args.get("command") or args.get("cmd")
+                if isinstance(cmd, list):
+                    cmd = " ".join(str(c) for c in cmd)
+                if isinstance(cmd, str) and cmd:
+                    commands.append(cmd)
+            elif name == "apply_patch":
+                for f in _patch_files(args.get("input") if isinstance(args, dict) else args):
+                    touch(f)
+            elif name == "update_plan" and isinstance(args, dict) and isinstance(args.get("plan"), list):
+                info["todos"] = [{"content": s.get("step", ""), "status": s.get("status", "")}
+                                 for s in args["plan"] if isinstance(s, dict)]
+    if last_message and isinstance(last_message, str):
+        info["last_answer"] = last_message.strip()
+    info["recent_requests"] = list(requests)
+    info["files_changed"] = list(files)
+    info["commands"] = list(commands)
+    return info
+
+
+class CodexCLI:
+    """OpenAI Codex CLI: live usage through its app-server (JSON-RPC over stdio) and interactive launch."""
+    executable = "codex"
+
+    @classmethod
+    def argv(cls, *extra):
+        exe = shutil.which(cls.executable)
+        if not exe:
+            return None
+        argv = [exe, *extra]
+        return ["cmd.exe", "/c"] + argv if IS_WIN and exe.lower().endswith((".cmd", ".bat")) else argv
+
+    @classmethod
+    def read_usage(cls, timeout=30):
+        """Return the 5-hour and weekly usage of the signed-in Codex account, or None when unavailable."""
+        argv = cls.argv("app-server")
+        if not argv:
+            return None
+        import threading
+        try:
+            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    text=True, encoding="utf-8", errors="replace", bufsize=1)
+        except OSError:
+            return None
+        killer = threading.Timer(timeout, proc.kill)
+        killer.start()
+
+        def send(message):
+            proc.stdin.write(json.dumps(message) + "\n")
+            proc.stdin.flush()
+
+        def reply(request_id):
+            for line in proc.stdout:
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(message, dict) and message.get("id") == request_id:
+                    return message
+            return None
+
+        try:
+            send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"clientInfo": {"name": "claude-relay", "version": VERSION}}})
+            if not reply(1):
+                return None
+            send({"jsonrpc": "2.0", "method": "initialized"})
+            send({"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": None})
+            answer = reply(2) or {}
+        except (OSError, ValueError):
+            return None
+        finally:
+            killer.cancel()
+            cls._stop(proc)
+        result = answer.get("result")
+        if not isinstance(result, dict):
+            return None
+        limits = result.get("rateLimits") or {}
+        primary, weekly = limits.get("primary") or {}, limits.get("secondary") or {}
+        if to_float(primary.get("usedPercent")) is None:
+            return None
+        return {"pct": to_float(primary.get("usedPercent")), "resets": to_epoch(primary.get("resetsAt")),
+                "weekly_pct": to_float(weekly.get("usedPercent")), "weekly_resets": to_epoch(weekly.get("resetsAt")),
+                "plan": limits.get("planType"), "reached": limits.get("rateLimitReachedType"),
+                "allowed": result.get("ordinaryUsageAllowed")}
+
+    @staticmethod
+    def _stop(proc):
+        """Close stdin so the app-server exits on its own; force-stop the whole process tree if it doesn't."""
+        with contextlib.suppress(OSError, ValueError):
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            if IS_WIN:  # a .cmd launcher's child would survive killing cmd.exe alone
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+            else:
+                proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=5)
+        with contextlib.suppress(OSError, ValueError):
+            proc.stdout.close()
+
+    @staticmethod
+    def limit_reached(usage):
+        return bool(usage and (usage.get("reached") or usage.get("allowed") is False or (usage.get("pct") or 0) >= 100))
+
+    @classmethod
+    def interactive(cls, prompt):
+        return [cls.executable, prompt]
+
+
 SECRET_PATTERNS = [
     (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.S),
      "[REDACTED PRIVATE KEY]"),
@@ -393,10 +552,16 @@ def checkpoint(cwd, session=None):
     return folder / HANDOFF_NAME
 
 
-def build_handoff(cwd, transcript=None, reason="manual", resets_at=None, session=None):
+def build_handoff(cwd, transcript=None, reason="manual", resets_at=None, session=None, source="claude",
+                  last_message=None):
     cwd = Path(cwd).resolve()
-    transcript = select_transcript(cwd, transcript, session)
-    info = parse_transcript(transcript)
+    agent, short = AGENTS.get(source, AGENTS["claude"])
+    if source == "codex":
+        transcript = Path(transcript) if transcript and Path(transcript).is_file() else None
+        info = parse_codex_transcript(transcript, last_message)
+    else:
+        transcript = select_transcript(cwd, transcript, session)
+        info = parse_transcript(transcript)
     clip = lambda s, n: (s[:n] + " …") if len(s) > n else s
     out = checkpoint(cwd, session)
     keep_notes = ""
@@ -407,8 +572,8 @@ def build_handoff(cwd, transcript=None, reason="manual", resets_at=None, session
     L = ["# Handoff: continue this task", "",
          f"- **Created:** {dt.datetime.now():%d %b %Y, %H:%M}",
          f"- **Reason:** {reason}",
-         "- **From → to:** Claude Code → Antigravity",
-         f"- **Claude limit resets at:** {fmt_time(resets_at)}",
+         f"- **From → to:** {agent} → Antigravity",
+         f"- **{short} limit resets at:** {fmt_time(resets_at)}",
          f"- **Project folder:** `{cwd}`",
          f"- **Source session:** {session or 'unidentified'}",
          f"- **Transcript:** {'available' if transcript else 'unavailable'}", "",
@@ -590,6 +755,101 @@ def cmd_on_limit(_args):
         log(f"on-limit error: {error}")
 
 
+def codex_state_file():
+    return STATE_DIR / "codex-state.json"
+
+
+def usage_line(usage):
+    pct = usage["pct"]
+    bar = "█" * int(min(max(pct, 0), 100) // 10)
+    week = usage.get("weekly_pct")
+    return (f"{dt.datetime.now():%H:%M}  Codex 5h {bar}{'░' * (10 - len(bar))} {pct:.0f}% "
+            f"resets {fmt_time(usage.get('resets'))}" + (f" | week {week:.0f}%" if week is not None else "")
+            + (f" | {usage['reached']}" if usage.get("reached") else ""))
+
+
+def codex_check(cwd, session=None, transcript=None, last_message=None, trigger="hook", usage=None):
+    """Prepare a checkpoint at prepare_at and, in auto mode, open Antigravity once the Codex limit is reached."""
+    cfg = config()
+    usage = usage or CodexCLI.read_usage()
+    if not usage:
+        log(f"codex {trigger}: usage unavailable")
+        return ""
+    save_json(codex_state_file(), dict(usage, updated=time.time()))
+    pct, resets, reached = usage["pct"], usage.get("resets"), CodexCLI.limit_reached(usage)
+    window = resets or "unknown-" + str(int(time.time() // (5 * 3600)))
+    with session_state(cwd, "codex:" + (session or "manual")) as state:
+        if reached and cfg["mode"] == "auto":
+            if time.time() - state.get("last_switch", 0) < SWITCH_COOLDOWN:
+                return ""
+            label = usage.get("reached") or f"{pct:.0f}%"
+            path = build_handoff(cwd, transcript, f"Codex usage limit reached ({label})", resets, session, "codex",
+                                 last_message)
+            state["prepared_for"] = window
+            if open_in_new_terminal(Antigravity.interactive(cfg, cwd, path), cwd, cfg):
+                if not cfg["dry_run"]:
+                    state["last_switch"] = time.time()
+                msg = "Codex limit reached. " + ("Dry run: Antigravity launch simulated." if cfg["dry_run"]
+                                                 else "Antigravity launch requested.")
+            else:
+                msg = "Codex limit reached. Antigravity launch failed. Retry with relay.py launch."
+            if not cfg["dry_run"]:
+                notify("Claude Relay", msg)
+            log(f"codex {trigger}: {msg}")
+            return f"{msg} ({path})"
+        if (pct >= cfg["prepare_at"] or reached) and state.get("prepared_for") != window:
+            path = build_handoff(cwd, transcript, f"Codex 5-hour usage at {pct:.0f}%", resets, session, "codex",
+                                 last_message)
+            state["prepared_for"] = window
+            log(f"codex {trigger}: checkpoint prepared at {pct:.0f}%")
+            return f"Codex usage at {pct:.0f}%: checkpoint prepared ({path})."
+    return ""
+
+
+def cmd_codex_hook(_args):
+    """Codex CLI hook entry point (Stop after every turn, PostModelRequest after every model request)."""
+    data = read_stdin_json()
+    event = str(data.get("hook_event_name") or "").lower()
+    try:
+        if event == "postmodelrequest" and data.get("status") != "failed":
+            return  # the common case: return immediately
+        if event == "stop":
+            cached = load_json(codex_state_file(), {})
+            fresh = time.time() - float(cached.get("updated") or 0) < CODEX_CHECK_INTERVAL
+            if fresh and not CodexCLI.limit_reached(cached) and (to_float(cached.get("pct")) or 0) < config()["prepare_at"]:
+                return  # usage was read moments ago and is well below the threshold
+        codex_check(data.get("cwd") or os.getcwd(), clean_session(data.get("session_id")), data.get("transcript_path"),
+                    data.get("last_assistant_message"), event or "hook")
+    except Exception as error:  # a hook must never break the Codex session
+        log(f"codex-hook error: {error}")
+    finally:
+        if event == "stop":
+            print("{}")  # Codex expects JSON from a Stop hook
+
+
+def cmd_watch(args):
+    if args.agent != "codex":
+        raise ValueError("watch supports --agent codex. Claude Code reports usage through Relay's status line.")
+    cwd = str(Path(args.cwd or os.getcwd()).resolve())
+    session = clean_session(args.session)
+    print(f"Watching Codex usage for {cwd} every {args.interval}s. Press Ctrl+C to stop.")
+    try:
+        while True:
+            usage = CodexCLI.read_usage()
+            if usage:
+                print(usage_line(usage), flush=True)
+                message = codex_check(cwd, session, None, None, "watch", usage)
+                if message:
+                    print("  " + message, flush=True)
+            else:
+                print("Codex usage unavailable. Is the Codex CLI installed and signed in?", flush=True)
+            if args.once:
+                return
+            time.sleep(max(15, args.interval))
+    except KeyboardInterrupt:
+        print("Stopped watching.")
+
+
 def selected_checkpoint(cwd, session):
     if not session:
         default = checkpoint(cwd)
@@ -606,9 +866,13 @@ def selected_checkpoint(cwd, session):
 def cmd_handoff(args):
     cwd = args.cwd or os.getcwd()
     session = None if args.session == "manual" else args.session
-    transcript = select_transcript(cwd, args.transcript, session)
-    with session_state(cwd, session):
-        path = build_handoff(cwd, transcript, session=session)
+    if args.agent == "codex":
+        with session_state(cwd, "codex:" + (session or "manual")):
+            path = build_handoff(cwd, args.transcript, session=session, source="codex")
+    else:
+        transcript = select_transcript(cwd, args.transcript, session)
+        with session_state(cwd, session):
+            path = build_handoff(cwd, transcript, session=session)
     print(f"Handoff written: {path}")
     if args.launch:
         request_launch(cwd, path)
@@ -804,17 +1068,23 @@ def cmd_back(args):
     if not handoff.exists():
         print(f"No checkpoint at {handoff} - nothing to hand back. Run relay.py checkpoints to list them.")
         return
-    if args.resume and (not args.launch or not args.session or args.session == "manual"):
-        raise ValueError("--resume requires --launch and an explicit Claude --session ID.")
-    command = ClaudeCode.resume_command(args.session if args.resume else None) if args.launch else None
+    text = handoff.read_text(encoding="utf-8", errors="replace")
+    target = getattr(args, "to", None) or ("codex" if "**From → to:** Codex CLI" in text else "claude")
+    agent = AGENTS[target][0]
+    if args.resume and (target != "claude" or not args.launch or not args.session or args.session == "manual"):
+        raise ValueError("--resume requires --launch, --to claude and an explicit Claude --session ID.")
+    command = None
+    if args.launch:
+        command = ([CodexCLI.executable] if target == "codex"
+                   else ClaudeCode.resume_command(args.session if args.resume else None))
     g = git_summary(cwd)
     checkpoint_session = args.session
     if checkpoint_session is None and handoff.parent.name != HANDOFF_DIR:
         checkpoint_session = source_session(handoff)
-    since = changes_since_handoff(cwd, handoff.read_text(encoding="utf-8", errors="replace"))
+    since = changes_since_handoff(cwd, text)
     with session_state(cwd, None if checkpoint_session == "manual" else checkpoint_session):
         with handoff.open("a", encoding="utf-8") as stream:
-            stream.write(f"\n## Returned to Claude Code – {dt.datetime.now():%d %b %Y, %H:%M}\n")
+            stream.write(f"\n## Returned to {agent} – {dt.datetime.now():%d %b %Y, %H:%M}\n")
             if since:
                 stream.write(since)
             elif g:
@@ -826,7 +1096,7 @@ def cmd_back(args):
                 print(line[4:] + ":" if line.startswith("### ") else "  " + line)
     if command:
         relative = handoff.relative_to(cwd).as_posix()
-        command.append(f"Read {relative}, especially Progress since handoff and the Returned to Claude Code "
+        command.append(f"Read {relative}, especially Progress since handoff and the Returned to {agent} "
                        "summary of what changed, then continue.")
         if not open_in_new_terminal(command, cwd, cfg):
             sys.exit(2)
@@ -907,6 +1177,18 @@ def cmd_doctor(_args):
     check("/handoff command installed", (CLAUDE_DIR / "commands" / "handoff.md").exists(), "Run: relay.py install")
     check("/ask-antigravity command installed", (CLAUDE_DIR / "commands" / "ask-antigravity.md").exists(),
           "Run: relay.py install")
+    codex = shutil.which(CodexCLI.executable)
+    codex_manifest = load_json(codex_manifest_path(), {})
+    if codex or codex_manifest:
+        codex_version = version([codex, "--version"]) if codex else None
+        check(f"Codex CLI: {codex_version or 'unavailable'}", codex_version, "Install the Codex CLI and sign in")
+        if codex_manifest:
+            hooks = (load_json(codex_hooks_file(), {}) or {}).get("hooks", {})
+            installed = all(group in hooks.get(event, []) for event, group in codex_manifest.get("groups", {}).items())
+            check("Codex Stop and PostModelRequest hooks installed", installed, "Run: relay.py install --codex")
+            print("        → approve them once in Codex with /hooks (Codex skips hooks you haven't trusted)")
+        else:
+            print("  [TIP] Codex CLI found → run relay.py install --codex to switch Codex to Antigravity at its limit too")
     st = load_json(STATE_FILE, {})
     if st.get("five_hour_pct") is not None:
         print(f"\n  Last seen 5-hour usage: {st['five_hour_pct']:.0f}% (resets {fmt_time(st.get('resets_at'))})")
@@ -924,9 +1206,14 @@ def human_delta(seconds):
 
 
 def cmd_status(args):
-    cfg, state = config(), load_json(STATE_FILE, {})
+    cfg, state, codex = config(), load_json(STATE_FILE, {}), load_json(codex_state_file(), {})
+    if getattr(args, "agent", None) == "codex":
+        live = CodexCLI.read_usage()
+        if live:
+            codex = dict(live, updated=time.time())
+            save_json(codex_state_file(), codex)
     if getattr(args, "json", False):
-        print(json.dumps({"version": VERSION, "config": cfg, "state": state}, indent=2))
+        print(json.dumps({"version": VERSION, "config": cfg, "state": state, "codex": codex}, indent=2))
         return
     now = time.time()
     print(f"Claude Relay {VERSION}   mode: {cfg['mode']}   prepare at {cfg['prepare_at']}%   "
@@ -944,6 +1231,9 @@ def cmd_status(args):
         else:
             print(f"Resets       : {fmt_time(resets)}, {human_delta(now - resets)} ago. "
                   "Claude is available again: run relay.py back --launch in the project.")
+    if to_float(codex.get("pct")) is not None:
+        seen = human_delta(now - float(codex.get("updated") or now))
+        print(f"Codex usage  : {usage_line(codex).split('  ', 1)[1]}   (seen {seen} ago)")
     cwd = Path(getattr(args, "cwd", None) or os.getcwd()).resolve()
     root = cwd / HANDOFF_DIR
     found = sorted(root.glob("sessions/*/" + HANDOFF_NAME)) + ([root / HANDOFF_NAME] if (root / HANDOFF_NAME).exists() else [])
@@ -1084,12 +1374,101 @@ def cmd_install(args):
             continue
         save_text(path, content)
         manifest["commands"][name] = content
+    codex_hooks = read_codex_hooks() if getattr(args, "codex", False) else None  # validate before writing anything
     save_json(manifest_path, manifest)
     save_json(CLAUDE_SETTINGS, settings)
     save_json(CONFIG_FILE, cfg)
     print(f"Installed Claude Relay {VERSION}. Mode: {cfg['mode']}, handoff prepared at {cfg['prepare_at']}%.")
     print(f"  Claude settings : {CLAUDE_SETTINGS}\n  Slash commands  : /handoff, /ask-antigravity\n  Relay config    : {CONFIG_FILE}")
+    if codex_hooks is not None:
+        windows_py = "py -3" if shutil.which("py") else q(py)  # Codex hook commands on Windows: unquoted first token
+        install_codex(codex_hooks, run("codex-hook"), f"{windows_py} {q(cmd_path(__file__))} codex-hook", run)
     print("Restart Claude Code, then run: relay.py doctor")
+
+
+CODEX_SKILL = "relay-handoff"
+
+
+def codex_hooks_file():
+    return CODEX_DIR / "hooks.json"
+
+
+def codex_manifest_path():
+    return STATE_DIR / ("codex-install-" + hashlib.sha256(str(codex_hooks_file().resolve()).encode()).hexdigest() + ".json")
+
+
+def read_codex_hooks():
+    path = codex_hooks_file()
+    data = load_json(path, None) if path.exists() else {}
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+        raise ValueError(f"Invalid Codex hooks file at {path}.")
+    if any(not isinstance(v, list) for v in data.get("hooks", {}).values()):
+        raise ValueError(f"Every event in {path} must hold a list of hook groups.")
+    return data
+
+
+def install_codex(data, command, command_windows, run):
+    previous = load_json(codex_manifest_path(), {})
+    hooks = data.setdefault("hooks", {})
+    groups = {}
+    for event in ("Stop", "PostModelRequest"):
+        group = {"hooks": [{"type": "command", "command": command, "commandWindows": command_windows,
+                            "timeout": 60, "async": True,
+                            "statusMessage": "Claude Relay: checking Codex usage"}]}
+        entries = hooks.setdefault(event, [])
+        owned = previous.get("groups", {}).get(event)
+        if owned in entries:
+            entries.remove(owned)
+        if group not in entries:
+            entries.append(group)
+        groups[event] = group
+    skill_path = CODEX_DIR / "skills" / CODEX_SKILL / "SKILL.md"
+    skill = (
+        "---\n"
+        f"name: {CODEX_SKILL}\n"
+        "description: Hand the current Codex task over to Google Antigravity with Claude Relay. Use when the user asks "
+        "to hand off, to switch to Antigravity, or says the Codex usage limit is close.\n"
+        "---\n\n"
+        "# Hand this task over to Google Antigravity\n\n"
+        "In PowerShell, put `& ` in front of a command that starts with a quoted path.\n\n"
+        f"1. Run: {run('handoff --agent codex')}\n"
+        "2. Open the printed checkpoint and replace the text under 'Last recorded agent update' with a short summary "
+        "(max 8 bullets): what is done, what is in progress, the exact next step, and any gotchas.\n"
+        f"3. Run: {run('launch --session manual')}\n"
+        "4. Report the launch result.\n")
+    kept_skill = skill_path.exists() and skill_path.read_text(encoding="utf-8") != previous.get("skill")
+    if kept_skill:
+        print(f"Kept existing Codex skill: {skill_path}")
+    else:
+        save_text(skill_path, skill)
+    save_json(codex_hooks_file(), data)
+    save_json(codex_manifest_path(), {"groups": groups, "skill": None if kept_skill else skill})
+    print(f"  Codex hooks     : {codex_hooks_file()} (Stop, PostModelRequest)")
+    print(f"  Codex skill     : ${CODEX_SKILL}")
+    print("  Next: open Codex and run /hooks to approve the two Relay hooks (Codex skips untrusted hooks).")
+
+
+def uninstall_codex():
+    manifest = load_json(codex_manifest_path(), {})
+    if not manifest:
+        return False
+    data = read_codex_hooks()
+    hooks = data.get("hooks", {})
+    for event, group in manifest.get("groups", {}).items():
+        entries = hooks.get(event, [])
+        if group in entries:
+            entries.remove(group)
+            if not entries:
+                hooks.pop(event)
+    save_json(codex_hooks_file(), data)
+    skill_path = CODEX_DIR / "skills" / CODEX_SKILL / "SKILL.md"
+    if manifest.get("skill") and skill_path.is_file() and skill_path.read_text(encoding="utf-8") == manifest["skill"]:
+        skill_path.unlink()
+        with contextlib.suppress(OSError):
+            skill_path.parent.rmdir()
+    codex_manifest_path().unlink()
+    print("Claude Relay removed from Codex CLI.")
+    return True
 
 
 def installation_manifest():
@@ -1106,10 +1485,12 @@ def read_settings():
 
 
 def cmd_uninstall(_args):
+    removed_codex = uninstall_codex()
     manifest_path = installation_manifest()
     manifest = load_json(manifest_path, {})
     if not manifest:
-        print("No v1.4 Relay installation recorded.")
+        if not removed_codex:
+            print("No v1.4 Relay installation recorded.")
         return
     settings = read_settings()
     if settings.get("statusLine") == manifest["status"]:
@@ -1150,16 +1531,25 @@ def main(argv=None):
     i = sub.add_parser("install")
     i.add_argument("--mode", choices=["auto", "manual"]); i.add_argument("--threshold", type=int)
     i.add_argument("--model")
-    for name in ("uninstall", "statusline", "on-limit", "doctor"):
+    i.add_argument("--codex", action="store_true", help="also add the automatic switch to Codex CLI")
+    for name in ("uninstall", "statusline", "on-limit", "doctor", "codex-hook"):
         sub.add_parser(name)
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     status.add_argument("--cwd")
+    status.add_argument("--agent", choices=["claude", "codex"])
+    w = sub.add_parser("watch")
+    w.add_argument("--agent", choices=["codex"], required=True)
+    w.add_argument("--interval", type=int, default=120)
+    w.add_argument("--once", action="store_true")
+    w.add_argument("--cwd")
+    w.add_argument("--session")
     conf = sub.add_parser("config")
     conf.add_argument("key", nargs="?")
     conf.add_argument("value", nargs="?")
     h = sub.add_parser("handoff"); h.add_argument("--launch", action="store_true")
     h.add_argument("--cwd"); h.add_argument("--transcript")
+    h.add_argument("--agent", choices=["claude", "codex"], default="claude")
     l = sub.add_parser("launch"); l.add_argument("--cwd")
     a = sub.add_parser("ask"); a.add_argument("question", nargs="?"); a.add_argument("--file")
     a.add_argument("--cwd"); a.add_argument("--allow-edits", action="store_true")
@@ -1167,6 +1557,7 @@ def main(argv=None):
     b = sub.add_parser("back"); b.add_argument("--launch", action="store_true"); b.add_argument("--cwd")
     s = sub.add_parser("simulate"); s.add_argument("--live", action="store_true"); s.add_argument("--cwd")
     b.add_argument("--resume", action="store_true")
+    b.add_argument("--to", choices=["claude", "codex"])
     preview = sub.add_parser("preview")
     preview.add_argument("--cwd")
     for parser in (h, l, b, preview):
@@ -1184,7 +1575,8 @@ def main(argv=None):
         {"install": cmd_install, "uninstall": cmd_uninstall, "statusline": cmd_statusline, "on-limit": cmd_on_limit,
      "status": cmd_status, "doctor": cmd_doctor, "handoff": cmd_handoff, "launch": cmd_launch, "ask": cmd_ask,
      "back": cmd_back, "simulate": cmd_simulate, "preview": cmd_preview, "checkpoints": cmd_list,
-         "purge-answers": cmd_purge, "config": cmd_config}[args.cmd](args)
+         "purge-answers": cmd_purge, "config": cmd_config, "codex-hook": cmd_codex_hook,
+         "watch": cmd_watch}[args.cmd](args)
     except (ValueError, OSError, subprocess.TimeoutExpired) as error:
         print(f"Relay: {error}", file=sys.stderr)
         sys.exit(2)
