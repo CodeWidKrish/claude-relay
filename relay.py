@@ -197,6 +197,16 @@ def log(msg):
         pass
 
 
+def via_cmd_exe(switch, argv):
+    """Command line that runs a .cmd/.bat launcher through cmd.exe.
+
+    cmd.exe removes the first and last quote of everything after /c or /k when the line holds more than two
+    quotes, which splits a quoted path such as C:\\Users\\Jane Doe\\...\\codex.cmd at the space. One extra pair of
+    outer quotes is what it removes, so the quoted program path and arguments arrive intact.
+    """
+    return f'cmd.exe {switch} "{subprocess.list2cmdline(argv)}"'
+
+
 def cmd_path(p):
     """Forward slashes work in cmd, PowerShell and Git Bash (which Claude Code uses on Windows)."""
     return Path(p).resolve().as_posix()
@@ -384,7 +394,7 @@ class CodexCLI:
         if not exe:
             return None
         argv = [exe, *extra]
-        return ["cmd.exe", "/c"] + argv if IS_WIN and exe.lower().endswith((".cmd", ".bat")) else argv
+        return via_cmd_exe("/c", argv) if IS_WIN and exe.lower().endswith((".cmd", ".bat")) else argv
 
     @classmethod
     def read_usage(cls, timeout=30):
@@ -658,7 +668,7 @@ def open_in_new_terminal(cmd, cwd, cfg):
             # .cmd/.bat shims (npm installs) need cmd.exe /k so the window stays open.
             argv = [exe] + cmd[1:]
             if exe.lower().endswith((".cmd", ".bat")):
-                argv = ["cmd.exe", "/k"] + argv
+                argv = via_cmd_exe("/k", argv)
             subprocess.Popen(argv, cwd=cwd, creationflags=subprocess.CREATE_NEW_CONSOLE,
                              close_fds=True)
         elif platform.system() == "Darwin":
@@ -948,7 +958,7 @@ def run_antigravity_headless(cfg, prompt, cwd, allow_edits=False, timeout=ASK_TI
                   "Reply with the answer only.")
     argv += ["--mode", "accept-edits" if allow_edits else "plan", "-p", prompt]
     if via_cmd:
-        argv = ["cmd.exe", "/c"] + argv
+        argv = via_cmd_exe("/c", argv)
     try:
         r = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)

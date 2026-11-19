@@ -543,6 +543,25 @@ class RelayRegressions(unittest.TestCase):
         self.assertIn("Codex 5h", output.getvalue())
         self.assertIn("55%", output.getvalue())
 
+    @unittest.skipUnless(os.name == "nt", "cmd.exe quoting only exists on Windows")
+    def test_cmd_launchers_in_folders_with_spaces_keep_their_path_and_arguments(self):
+        # Codex installed with npm lives in C:\Users\<First Last>\AppData\Roaming\npm\codex.cmd
+        folder = self.root / "Jane Doe" / "npm"
+        folder.mkdir(parents=True)
+        (folder / "echo_args.py").write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+        launcher = folder / "tool.cmd"
+        launcher.write_text(f'@"{sys.executable}" "%~dp0echo_args.py" %*\r\n', encoding="utf-8")
+        prompt = "Read .relay/HANDOFF.md, especially Progress since handoff, then continue."
+        line = relay.via_cmd_exe("/c", [str(launcher), prompt])
+        result = subprocess.run(line, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(json.loads(result.stdout), [prompt], result.stderr)
+        # the same launcher shape, end to end, for Codex usage reads
+        (folder / "fake_codex.py").write_text(self.FAKE_CODEX, encoding="utf-8")
+        (folder / "codex.cmd").write_text(f'@"{sys.executable}" "%~dp0fake_codex.py" %*\r\n', encoding="utf-8")
+        os.environ["PATH"] = str(folder) + os.pathsep + os.environ.get("PATH", "")
+        os.environ["FAKE_CODEX_PCT"] = "33"
+        self.assertEqual(relay.CodexCLI.read_usage()["pct"], 33)
+
     def test_antigravity_launch_is_focused_and_mode_is_configurable(self):
         path = relay.build_handoff(self.project, session="focus")
         command = relay.Antigravity.interactive(relay.config(), self.project, path)
