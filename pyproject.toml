@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-relay-antigravity"
-version = "1.10.0"
+version = "1.10.1"
 description = "Hand Claude Code or Codex CLI work to Google Antigravity at the 5-hour limit, and back after the reset."
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -2,6 +2,12 @@
 
 All notable changes to Claude Relay. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [semantic versioning](https://semver.org/).
 
+## [1.10.1] - 2026-11-21
+
+### Fixed
+- Installed with pipx, Relay's hints now say `claude-relay …` instead of `relay.py …`.
+- `doctor` no longer tells pipx users to move Relay out of a folder with spaces; pipx installs handle spaces, and the folder isn't the user's choice. The OneDrive warning stays.
+
 ## [1.10.0] - 2026-11-21
 
 ### Added
@@ -81,5 +87,6 @@ All notable changes to Claude Relay. The format follows [Keep a Changelog](https
 ### Added
 - First release: automatic switch from Claude Code to Antigravity at the 5-hour limit, manual `/handoff`, and `back`.
 
+[1.10.1]: https://github.com/CodeWidKrish/claude-relay/releases/tag/v1.10.1
 [1.10.0]: https://github.com/CodeWidKrish/claude-relay/releases/tag/v1.10.0
 [1.9.0]: https://github.com/CodeWidKrish/claude-relay/releases/tag/v1.9.0

@@ -7,8 +7,8 @@
 <br>
 
 <a href="https://github.com/CodeWidKrish/claude-relay/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/CodeWidKrish/claude-relay/tests.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI" alt="CI status"></a>
-<a href="#-whats-new-in-v1100-restart-safe-return"><img src="https://img.shields.io/badge/version-1.10.0-ff8a4c?style=for-the-badge" alt="Version 1.10.0"></a>
-<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-87%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="87 test scenarios"></a>
+<a href="#-whats-new-in-v1100-restart-safe-return"><img src="https://img.shields.io/badge/version-1.10.1-ff8a4c?style=for-the-badge" alt="Version 1.10.1"></a>
+<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-89%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="89 test scenarios"></a>
 <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Codex%20CLI-7928CA?style=for-the-badge" alt="Agents: Claude Code and Codex CLI">
 <img src="https://img.shields.io/badge/python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
 <img src="https://img.shields.io/badge/dependencies-zero-8957e5?style=for-the-badge" alt="Zero dependencies">
@@ -48,7 +48,7 @@
 
 <br>
 
-<img src="docs/assets/stats.svg" alt="87 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
+<img src="docs/assets/stats.svg" alt="89 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
 
 ## 💡 Why Relay?
 
@@ -134,6 +134,7 @@ When the limit resets, one command hands the work **back to Claude**, with a sum
 - **PyPI-ready:** the package is named `claude-relay-antigravity` (the `claude-relay` name on PyPI belongs to another project), and a release workflow publishes it with PyPI trusted publishing once it's switched on.
 - Verified live on Windows 11: the login item in a folder with a space, and `pipx install` into a folder with a space.
 - 87 tests, up from 81.
+- **v1.10.1:** with pipx, hints say `claude-relay …` instead of `relay.py …`, and `doctor` no longer suggests moving a pipx install.
 
 <a href="docs/images/v1.10.0-restart-return.png"><img src="docs/images/v1.10.0-restart-return.png" alt="Sandbox run: Claude hits its limit, Relay saves the pending return and adds a login item; after a simulated restart the login item resumes the return, hands the work back to Claude Code and removes itself"></a>
 
@@ -631,7 +632,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 <sub>Click any screenshot to open it full size.</sub>
 
 <details>
-<summary><b>🧪 Test run (v1.10.0: 87 tests)</b></summary>
+<summary><b>🧪 Test run (v1.10.0 capture: 87 tests; v1.10.1 has 89)</b></summary>
 <br>
 
 ![28 end-to-end tests and 59 regression tests passing, including the restart-safe return, settings validation, heading escaping, the summary request, Codex and Windows path tests](docs/images/v1.10.0-tests.png)
@@ -664,7 +665,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 
 ## ✅ Tested conditions
 
-Run both test scripts for **87 scenarios**. The tests simulate Claude hook payloads and use a fake `agy`, a fake Codex app-server or mocked launchers. CI runs them on Windows, macOS and Linux with Python 3.8 to 3.13, and also checks lint, the installers, the package build and coverage (at least 80%).
+Run both test scripts for **89 scenarios**. The tests simulate Claude hook payloads and use a fake `agy`, a fake Codex app-server or mocked launchers. CI runs them on Windows, macOS and Linux with Python 3.8 to 3.13, and also checks lint, the installers, the package build and coverage (at least 80%).
 
 <details>
 <summary><b>🧪 Show all edge cases covered</b></summary>
@@ -844,7 +845,7 @@ claude-relay/
 ├── install.sh                # one-line installer for macOS and Linux
 ├── tests/
 │   ├── test_relay.py         # 28 end-to-end and edge-case tests
-│   ├── test_regressions.py   # 59 regression tests (sessions, locks, installs, setup, settings, ask, redaction, return, Codex)
+│   ├── test_regressions.py   # 61 regression tests (sessions, locks, installs, setup, settings, ask, redaction, return, Codex)
 │   └── sample_output.txt
 ├── docs/
 │   ├── assets/               # banner, demo GIF, architecture, stats, meter and footer

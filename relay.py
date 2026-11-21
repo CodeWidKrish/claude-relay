@@ -48,8 +48,12 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.10.0"
+VERSION = "1.10.1"
 IS_WIN = platform.system() == "Windows"
+# How the user runs Relay, for the hints it prints: the pipx/pip command, or the script itself.
+AS_PACKAGE = Path(sys.argv[0]).stem.lower() == "claude-relay"
+CLI = "claude-relay" if AS_PACKAGE else "relay.py"
+RUN = "claude-relay" if AS_PACKAGE else "python relay.py"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
 STATE_FILE = STATE_DIR / "state.json"
@@ -890,7 +894,7 @@ def cmd_on_limit(_args):
                         msg += " Antigravity launch requested."
                     msg += " " + schedule_return(cwd, session, "claude", to_epoch(resets), cfg)
                 else:
-                    msg += " Antigravity launch failed. Retry with relay.py launch."
+                    msg += f" Antigravity launch failed. Retry with {CLI} launch."
             if not cfg["dry_run"]:
                 notify("Claude Relay", msg)
             print(json.dumps({"systemMessage": f"Claude Relay: {msg} ({path})"}))
@@ -931,7 +935,7 @@ def schedule_return(cwd, session, source, resets, cfg):
     if not cfg.get("auto_return", True):
         return "Automatic return is off (config auto_return off)."
     if not resets:
-        return "Reset time unknown, so no automatic return: run relay.py back --launch after the reset."
+        return f"Reset time unknown, so no automatic return: run {CLI} back --launch after the reset."
     if cfg.get("dry_run"):
         return f"[dry-run] would hand the work back to {agent} at {fmt_time(resets)}."
     entry = {"cwd": str(Path(cwd).resolve()), "to": source, "at": int(resets), "session": session or "manual"}
@@ -942,7 +946,7 @@ def schedule_return(cwd, session, source, resets, cfg):
         log(f"auto return not started now: {error}")
         if not startup_entry().is_file():
             forget_return(entry)
-            return "Automatic return could not start: run relay.py back --launch after the reset."
+            return f"Automatic return could not start: run {CLI} back --launch after the reset."
         return (f"Automatic return could not start now; it will start at your next sign-in and reopen {agent} "
                 f"after {fmt_time(resets)}.")
     log(f"auto return scheduled: back to {agent} at {fmt_time(resets)} ({cwd})")
@@ -1160,7 +1164,7 @@ def codex_check(cwd, session=None, transcript=None, last_message=None, trigger="
                                                  else "Antigravity launch requested.")
                 msg += " " + schedule_return(cwd, session, "codex", resets, cfg)
             else:
-                msg = "Codex limit reached. Antigravity launch failed. Retry with relay.py launch."
+                msg = f"Codex limit reached. Antigravity launch failed. Retry with {CLI} launch."
             if not cfg["dry_run"]:
                 notify("Claude Relay", msg)
             log(f"codex {trigger}: {msg}")
@@ -1262,7 +1266,7 @@ def cmd_launch(args):
     cwd = args.cwd or os.getcwd()
     path = selected_checkpoint(cwd, args.session)
     if not path.is_file():
-        raise ValueError("No handoff available. Run relay.py handoff first.")
+        raise ValueError(f"No handoff available. Run {CLI} handoff first.")
     request_launch(cwd, path)
 
 
@@ -1393,7 +1397,7 @@ def cmd_ask(args):
             sys.exit(1)
     question = question.strip()
     if not question:
-        print('Nothing to ask. Usage: relay.py ask "your question"  or  relay.py ask --file question.md')
+        print(f'Nothing to ask. Usage: {CLI} ask "your question"  or  {CLI} ask --file question.md')
         sys.exit(1)
     files = referenced_files(question, cwd)
     prompt = ask_prompt(question, files, args.allow_edits)
@@ -1446,7 +1450,7 @@ def cmd_back(args):
     cfg, cwd = config(), Path(args.cwd or os.getcwd()).resolve()
     handoff = selected_checkpoint(cwd, args.session)
     if not handoff.exists():
-        print(f"No checkpoint at {handoff} - nothing to hand back. Run relay.py checkpoints to list them.")
+        print(f"No checkpoint at {handoff} - nothing to hand back. Run {CLI} checkpoints to list them.")
         return
     text = handoff.read_text(encoding="utf-8", errors="replace")
     target = getattr(args, "to", None) or ("codex" if "**From → to:** Codex CLI" in text else "claude")
@@ -1577,21 +1581,22 @@ def cmd_doctor(_args):
     check(f"git: {'found' if shutil.which('git') else 'not found (optional)'}", True)
     problems = config_problems()
     check("Settings valid" if not problems else "Settings: " + "; ".join(problems) + " (using the default instead)",
-          not problems, "Fix it with: relay.py config KEY VALUE")
+          not problems, f"Fix it with: {CLI} config KEY VALUE")
     here = Path(__file__).resolve().parent
-    if " " in str(here) or "onedrive" in str(here).lower():
+    packaged = "site-packages" in here.parts  # a pipx/pip install: spaces are handled and the folder is fixed
+    if (" " in str(here) and not packaged) or "onedrive" in str(here).lower():
         print(f"  [TIP] Relay lives in {here}\n"
               "        -> a path without spaces and outside OneDrive (e.g. C:\\claude-relay) makes hooks more robust")
     s = read_settings()
     manifest = load_json(installation_manifest(), {})
-    check("Status line installed", manifest and s.get("statusLine") == manifest["status"], "Run: relay.py install")
+    check("Status line installed", manifest and s.get("statusLine") == manifest["status"], f"Run: {CLI} install")
     check("Stop hook installed (summary before the limit)",
-          manifest and manifest.get("summary_hook") in s.get("hooks", {}).get("Stop", []), "Run: relay.py install")
+          manifest and manifest.get("summary_hook") in s.get("hooks", {}).get("Stop", []), f"Run: {CLI} install")
     check("StopFailure hook installed", manifest and manifest["hook"] in s.get("hooks", {}).get("StopFailure", []),
-          "Run: relay.py install")
-    check("/handoff command installed", (CLAUDE_DIR / "commands" / "handoff.md").exists(), "Run: relay.py install")
+          f"Run: {CLI} install")
+    check("/handoff command installed", (CLAUDE_DIR / "commands" / "handoff.md").exists(), f"Run: {CLI} install")
     check("/ask-antigravity command installed", (CLAUDE_DIR / "commands" / "ask-antigravity.md").exists(),
-          "Run: relay.py install")
+          f"Run: {CLI} install")
     codex = shutil.which(CodexCLI.executable)
     codex_manifest = load_json(codex_manifest_path(), {})
     if codex or codex_manifest:
@@ -1600,7 +1605,7 @@ def cmd_doctor(_args):
         if codex_manifest:
             hooks = (load_json(codex_hooks_file(), {}) or {}).get("hooks", {})
             installed = all(group in hooks.get(event, []) for event, group in codex_manifest.get("groups", {}).items())
-            check("Codex Stop and PostModelRequest hooks installed", installed, "Run: relay.py install --codex")
+            check("Codex Stop and PostModelRequest hooks installed", installed, f"Run: {CLI} install --codex")
             print("        → approve them once in Codex with /hooks (Codex skips hooks you haven't trusted)")
             if codex:
                 usage = CodexCLI.read_usage()
@@ -1609,7 +1614,7 @@ def cmd_doctor(_args):
                       "Sign in to Codex with a ChatGPT plan. If you are signed in, Codex may have changed how it "
                       "reports usage: update Relay. The $relay-handoff skill still works by hand.")
         else:
-            print("  [TIP] Codex CLI found → run relay.py install --codex to switch Codex to Antigravity at its limit too")
+            print(f"  [TIP] Codex CLI found → run {CLI} install --codex to switch Codex to Antigravity at its limit too")
     st = load_json(STATE_FILE, {})
     missing = usage_missing_since()
     if missing and time.time() - missing > 10 * 60:
@@ -1660,7 +1665,7 @@ def cmd_status(args):
             print(f"Resets       : {fmt_time(resets)}, in {human_delta(resets - now)}")
         else:
             print(f"Resets       : {fmt_time(resets)}, {human_delta(now - resets)} ago. "
-                  "Claude is available again: run relay.py back --launch in the project.")
+                  f"Claude is available again: run {CLI} back --launch in the project.")
     if to_float(codex.get("pct")) is not None:
         seen = human_delta(now - float(codex.get("updated") or now))
         print(f"Codex usage  : {usage_line(codex).split('  ', 1)[1]}   (seen {seen} ago)")
@@ -1721,7 +1726,7 @@ def cmd_config(args):
     if not args.key:
         for key in CONFIG_RULES:
             print(f"{key:<13} {json.dumps(cfg.get(key))}")
-        print(f"\nChange one with: relay.py config KEY VALUE   (file: {CONFIG_FILE})")
+        print(f"\nChange one with: {CLI} config KEY VALUE   (file: {CONFIG_FILE})")
         return
     if args.key not in CONFIG_RULES:
         raise ValueError(f"Unknown setting {args.key!r}. Known: {', '.join(CONFIG_RULES)}")
@@ -1751,7 +1756,7 @@ def cmd_setup(_args):
     print("  1. Restart Claude Code once.")
     if codex:
         print("  2. In Codex, type /hooks once and approve the two Claude Relay hooks (Codex asks for every new hook).")
-    print("  Try the switch without using your limit: python relay.py simulate" + (" --agent codex" if codex else ""))
+    print(f"  Try the switch without using your limit: {RUN} simulate" + (" --agent codex" if codex else ""))
 
 
 def cmd_install(args):
@@ -1845,7 +1850,7 @@ def cmd_install(args):
     if codex_hooks is not None:
         windows_py = "py -3" if shutil.which("py") else q(py)  # Codex hook commands on Windows: unquoted first token
         install_codex(codex_hooks, run("codex-hook"), f"{windows_py} {q(cmd_path(__file__))} codex-hook", run)
-    print("Restart Claude Code, then run: relay.py doctor")
+    print(f"Restart Claude Code, then run: {CLI} doctor")
 
 
 CODEX_SKILL = "relay-handoff"

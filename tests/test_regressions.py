@@ -925,5 +925,34 @@ class RelayRegressions(unittest.TestCase):
         self.assertIn("33%", output.getvalue())
 
 
+    # ---- v1.10.1: hints match how Relay was installed ---------------------------------------------------
+    def test_hints_use_the_command_the_user_actually_runs(self):
+        probe = ("import sys; sys.argv = [sys.argv[1]]; import relay; print(relay.CLI + '|' + relay.RUN)")
+        here = str(Path(relay.__file__).resolve().parent)
+
+        def names(argv0):
+            out = subprocess.run([sys.executable, "-c", probe, argv0], capture_output=True, text=True, cwd=here)
+            return out.stdout.strip()
+
+        self.assertEqual(names(str(Path("bin") / "claude-relay.exe")), "claude-relay|claude-relay")
+        self.assertEqual(names(str(Path("bin") / "claude-relay")), "claude-relay|claude-relay")
+        self.assertEqual(names("relay.py"), "relay.py|python relay.py")
+        with patch.object(relay, "CLI", "claude-relay"), contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_install(argparse.Namespace(mode="auto", threshold=None, model=None))
+        self.assertIn("then run: claude-relay doctor", output.getvalue())
+
+    def test_folder_tip_is_skipped_for_pipx_installs(self):
+        def tip(location):
+            with patch.object(relay, "__file__", location), patch.object(relay.shutil, "which", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                relay.cmd_doctor(None)
+            return "[TIP] Relay lives in" in output.getvalue()
+
+        user = self.root / "Jane Doe"
+        self.assertTrue(tip(str(user / "claude-relay" / "relay.py")), "a git clone in a folder with a space")
+        self.assertFalse(tip(str(user / "pipx" / "venvs" / "x" / "Lib" / "site-packages" / "relay.py")))
+        self.assertTrue(tip(str(self.root / "OneDrive" / "pipx" / "site-packages" / "relay.py")))
+
+
 if __name__ == "__main__":
     unittest.main()
