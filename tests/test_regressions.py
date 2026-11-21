@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import plistlib
 from pathlib import Path
 import subprocess
 import sys
@@ -31,14 +32,15 @@ class RelayRegressions(unittest.TestCase):
         paths = patch.multiple(relay, STATE_DIR=state, STATE_FILE=state / "state.json",
                                CONFIG_FILE=state / "config.json", LOG_FILE=state / "relay.log",
                                CLAUDE_DIR=claude, CLAUDE_SETTINGS=claude / "settings.json",
-                               CLAUDE_PROJECTS=claude / "projects", CODEX_DIR=root / "codex")
+                               CLAUDE_PROJECTS=claude / "projects", CODEX_DIR=root / "codex",
+                               STARTUP_DIR=root / "startup")
         paths.start()
         self.addCleanup(paths.stop)
         self.root = root
         # Relay settings exported in the developer's shell must not change test results.
         clean = {k: v for k, v in os.environ.items()
                  if k not in ("RELAY_DRY_RUN", "RELAY_HOME", "RELAY_PROMPT_FILE", "CLAUDE_CONFIG_DIR", "NO_COLOR",
-                              "CODEX_HOME")}
+                              "CODEX_HOME", "RELAY_STARTUP_DIR")}
         environ = patch.dict(os.environ, clean, clear=True)
         environ.start()
         self.addCleanup(environ.stop)
@@ -831,6 +833,96 @@ class RelayRegressions(unittest.TestCase):
         self.assertFalse((self.project / ".relay").exists())
         self.assertEqual(relay.load_json(relay.STATE_FILE, {}), {"five_hour_pct": 42})
         self.assertFalse(relay.codex_state_file().exists())
+
+
+    # ---- v1.10: automatic return survives a restart; usage-format warnings ----------------------------
+    def test_pending_return_survives_a_restart_and_cleans_up_after_itself(self):
+        relay.build_handoff(self.project, session="rb", source="codex")
+        reset = int(time.time()) + 3600
+        self.assertIn("reopened automatically", relay.schedule_return(self.project, "rb", "codex", reset,
+                                                                      relay.config()))
+        entry = relay.startup_entry()
+        self.assertTrue(entry.is_file(), "a login item exists while a return is pending")
+        self.assertIn("resume-returns", entry.read_text(encoding="utf-8"))
+        self.assertEqual(len(relay.load_json(relay.pending_file(), {})), 1)
+        # restart: the waiter is gone; at sign-in the login item starts it again
+        self.waiters = []
+        relay.cmd_resume_returns(None)
+        self.assertEqual(len(self.waiters), 1)
+        waiter = self.waiters[0]
+        self.assertEqual((waiter[waiter.index("--to") + 1], waiter[waiter.index("--at") + 1]), ("codex", str(reset)))
+        # the waiter hands the work back, then removes the pending return and the login item
+        args = argparse.Namespace(cwd=str(self.project), to="codex", at=reset, session="rb")
+        with patch.object(relay.time, "time", return_value=reset + 120), patch.object(relay, "notify"), \
+                patch.object(relay.CodexCLI, "read_usage", return_value={"pct": 1, "reached": None, "allowed": True}), \
+                patch.object(relay, "cmd_back") as back:
+            relay.cmd_return_after_reset(args)
+        self.assertEqual(back.call_count, 1)
+        self.assertFalse(relay.pending_file().exists())
+        self.assertFalse(entry.exists(), "the login item removes itself once nothing is pending")
+
+    def test_old_or_finished_pending_returns_are_dropped_at_sign_in(self):
+        stale = {"cwd": str(self.project.resolve()), "to": "claude", "at": int(time.time()) - 13 * 3600,
+                 "session": "old"}
+        gone = dict(stale, cwd=str(self.root / "deleted"), at=int(time.time()) + 600, session="gone")
+        relay.remember_return(stale)
+        relay.remember_return(gone)
+        self.waiters = []
+        relay.cmd_resume_returns(None)
+        self.assertEqual(self.waiters, [], "never reopen an agent hours later or in a deleted folder")
+        self.assertFalse(relay.pending_file().exists())
+        self.assertFalse(relay.startup_entry().exists())
+
+    def test_login_item_is_valid_on_every_system(self):
+        windows = relay.startup_entry_content("Windows")
+        self.assertIn('start ""', windows)
+        self.assertTrue(windows.rstrip().endswith("resume-returns"))
+        mac = plistlib.loads(relay.startup_entry_content("Darwin").encode("utf-8"))
+        self.assertEqual(mac["ProgramArguments"][-1], "resume-returns")
+        self.assertTrue(mac["RunAtLoad"])
+        linux = relay.startup_entry_content("Linux")
+        self.assertIn("[Desktop Entry]", linux)
+        self.assertIn('"resume-returns"', linux)
+        self.assertEqual(relay.desktop_quote('/home/Jane Doe/$x"100%'), '"/home/Jane Doe/\\$x\\"100%%"')
+        self.assertEqual(relay.startup_entry("Darwin").suffix, ".plist")
+        self.assertEqual(relay.startup_entry("Linux").suffix, ".desktop")
+        self.assertEqual(relay.startup_entry("Windows").suffix, ".cmd")
+
+    def test_uninstall_removes_pending_returns_and_the_login_item(self):
+        relay.remember_return({"cwd": str(self.project), "to": "claude", "at": int(time.time()) + 60, "session": "u"})
+        self.assertTrue(relay.startup_entry().exists())
+        with contextlib.redirect_stdout(io.StringIO()):
+            relay.cmd_uninstall(None)
+        self.assertFalse(relay.startup_entry().exists())
+        self.assertFalse(relay.pending_file().exists())
+
+    def test_doctor_explains_when_claude_stops_reporting_usage(self):
+        def doctor():
+            with patch.object(relay.shutil, "which", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                relay.cmd_doctor(None)
+            return output.getvalue()
+
+        def statusline(payload):
+            with patch.object(relay, "read_stdin_json", return_value=payload), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                relay.cmd_statusline(None)
+
+        statusline({"cwd": str(self.project), "session_id": "u"})
+        relay.save_json(relay.STATE_DIR / relay.USAGE_MISSING_FILE, {"since": time.time() - 3600, "last": time.time()})
+        self.assertIn("has not reported 5-hour usage", doctor())
+        statusline({"cwd": str(self.project), "session_id": "u",
+                    "rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": 2000000000}}})
+        self.assertNotIn("has not reported 5-hour usage", doctor(), "usage is back: no warning")
+
+    def test_doctor_checks_that_codex_usage_is_readable(self):
+        self.fake_codex(33)
+        with contextlib.redirect_stdout(io.StringIO()):
+            relay.cmd_install(argparse.Namespace(mode="auto", threshold=None, model=None, codex=True))
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_doctor(None)
+        self.assertIn("[OK ] Codex usage readable", output.getvalue())
+        self.assertIn("33%", output.getvalue())
 
 
 if __name__ == "__main__":

@@ -43,7 +43,8 @@ def setup():
     project = home / "projects" / "smart-home-api"
     project.mkdir(parents=True)
     (project / "app.py").write_text("print('hello')\n")
-    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home), RELAY_DRY_RUN="1", PROJECT=str(project))
+    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home), RELAY_DRY_RUN="1", PROJECT=str(project),
+               RELAY_STARTUP_DIR=str(home / "startup"))
     for name in ("CLAUDE_CONFIG_DIR", "RELAY_HOME", "RELAY_PROMPT_FILE", "NO_COLOR"):
         env.pop(name, None)
     key = "".join(c if c.isalnum() else "-" for c in str(project.resolve()))

@@ -32,6 +32,7 @@ import tempfile
 import uuid
 import os
 import platform
+import plistlib
 import re
 import shlex
 import shutil
@@ -47,7 +48,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 IS_WIN = platform.system() == "Windows"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
@@ -58,6 +59,8 @@ CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
 CLAUDE_SETTINGS = CLAUDE_DIR / "settings.json"
 CLAUDE_PROJECTS = CLAUDE_DIR / "projects"
 CODEX_DIR = Path(os.environ.get("CODEX_HOME", HOME / ".codex"))
+STARTUP_DIR = os.environ.get("RELAY_STARTUP_DIR")  # unset: the system's own login-items folder
+RETURN_GIVE_UP = 12 * 3600  # seconds after the reset; an older pending return is dropped, not run
 HANDOFF_DIR, HANDOFF_NAME = ".relay", "HANDOFF.md"
 SWITCH_COOLDOWN = 15 * 60  # seconds; StopFailure can fire many times for one limit
 CODEX_CHECK_INTERVAL = 45  # seconds between Codex usage reads triggered by the Stop hook
@@ -828,6 +831,7 @@ def cmd_statusline(_args):
                                       session=session)
                         local["prepared_for"] = window
         if pct is None:
+            note_missing_usage()
             print(f"{model} | 5h: -- | relay: {cfg['mode']}")
             return
         c = (("\033[32m" if pct < cfg["warn_at"] else "\033[33m" if pct < cfg["prepare_at"] else "\033[31m")
@@ -840,6 +844,28 @@ def cmd_statusline(_args):
     except Exception as e:  # a status line must never crash
         log(f"statusline error: {e}")
         print("Claude | relay")
+
+
+USAGE_MISSING_FILE = "usage-missing.json"
+
+
+def note_missing_usage():
+    """Remember that the status line arrived without 5-hour usage, so doctor can explain why Relay is blind."""
+    path = STATE_DIR / USAGE_MISSING_FILE
+    seen = load_json(path, {})
+    now = time.time()
+    if now - float(seen.get("last") or 0) > 60:  # the status line refreshes often; write at most once a minute
+        save_json(path, {"since": seen.get("since") or now, "last": now})
+
+
+def usage_missing_since():
+    """When the newest status line had no usage, return since when; None while usage is reported."""
+    seen = load_json(STATE_DIR / USAGE_MISSING_FILE, {})
+    last = float(seen.get("last") or 0)
+    updated = float(load_json(STATE_FILE, {}).get("updated") or 0)
+    if not last or last < updated or time.time() - last > 24 * 3600:
+        return None
+    return float(seen.get("since") or last)
 
 
 def cmd_on_limit(_args):
@@ -908,23 +934,147 @@ def schedule_return(cwd, session, source, resets, cfg):
         return "Reset time unknown, so no automatic return: run relay.py back --launch after the reset."
     if cfg.get("dry_run"):
         return f"[dry-run] would hand the work back to {agent} at {fmt_time(resets)}."
-    argv = [sys.executable, str(Path(__file__).resolve()), "return-after-reset", "--cwd", str(Path(cwd).resolve()),
-            "--to", source, "--at", str(int(resets)), "--session", session or "manual"]
-    options = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    entry = {"cwd": str(Path(cwd).resolve()), "to": source, "at": int(resets), "session": session or "manual"}
+    remember_return(entry)
     try:
-        if IS_WIN:
-            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-            try:  # leave the hook's job object, so the waiter outlives the hook process
-                subprocess.Popen(argv, creationflags=flags | 0x01000000, **options)
-            except OSError:
-                subprocess.Popen(argv, creationflags=flags, **options)
-        else:
-            subprocess.Popen(argv, start_new_session=True, **options)
+        start_waiter(entry)
     except OSError as error:
-        log(f"auto return not scheduled: {error}")
-        return "Automatic return could not start: run relay.py back --launch after the reset."
+        log(f"auto return not started now: {error}")
+        if not startup_entry().is_file():
+            forget_return(entry)
+            return "Automatic return could not start: run relay.py back --launch after the reset."
+        return (f"Automatic return could not start now; it will start at your next sign-in and reopen {agent} "
+                f"after {fmt_time(resets)}.")
     log(f"auto return scheduled: back to {agent} at {fmt_time(resets)} ({cwd})")
     return f"{agent} will be reopened automatically after the reset at {fmt_time(resets)}."
+
+
+def start_waiter(entry):
+    """Start the detached background process that waits for the reset and then hands the work back."""
+    argv = [sys.executable, str(Path(__file__).resolve()), "return-after-reset", "--cwd", entry["cwd"],
+            "--to", entry["to"], "--at", str(entry["at"]), "--session", entry["session"]]
+    options = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    if IS_WIN:
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        try:  # leave the hook's job object, so the waiter outlives the hook process
+            subprocess.Popen(argv, creationflags=flags | 0x01000000, **options)
+        except OSError:
+            subprocess.Popen(argv, creationflags=flags, **options)
+    else:
+        subprocess.Popen(argv, start_new_session=True, **options)
+
+
+# A pending automatic return is written to pending-returns.json, and a login item is added while any is pending.
+# After a restart or sign-out kills the waiter, the login item runs `resume-returns`, which starts it again.
+# The login item is removed as soon as nothing is pending.
+
+def pending_file():
+    return STATE_DIR / "pending-returns.json"
+
+
+def return_key(entry):
+    return f"{entry['to']}:{entry['session']}:{entry['cwd']}"
+
+
+def remember_return(entry):
+    pending = load_json(pending_file(), {})
+    pending = pending if isinstance(pending, dict) else {}
+    pending[return_key(entry)] = entry
+    save_json(pending_file(), pending)
+    try:
+        add_startup_entry()
+    except OSError as error:  # the waiter still runs; only a restart before the reset would lose it
+        log(f"login item not added: {error}")
+
+
+def forget_return(entry):
+    pending = load_json(pending_file(), {})
+    pending = pending if isinstance(pending, dict) else {}
+    pending.pop(return_key(entry), None)
+    if pending:
+        save_json(pending_file(), pending)
+    else:
+        with contextlib.suppress(OSError):
+            pending_file().unlink()
+        remove_startup_entry()
+
+
+def startup_entry(system=None):
+    system = system or platform.system()
+    if system == "Windows":
+        folder = STARTUP_DIR or (Path(os.environ.get("APPDATA") or HOME / "AppData" / "Roaming")
+                                 / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup")
+        return Path(folder) / "claude-relay-return.cmd"
+    if system == "Darwin":
+        return Path(STARTUP_DIR or HOME / "Library" / "LaunchAgents") / "io.github.codewidkrish.claude-relay.plist"
+    folder = STARTUP_DIR or Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "autostart"
+    return Path(folder) / "claude-relay-return.desktop"
+
+
+def desktop_quote(arg):
+    """Quote one argument for the Exec key of a .desktop file (freedesktop.org Desktop Entry spec)."""
+    escaped = re.sub(r'(["`$\\])', r"\\\1", arg).replace("%", "%%")
+    return f'"{escaped}"'
+
+
+def startup_entry_content(system=None):
+    system = system or platform.system()
+    python = Path(sys.executable)
+    if system == "Windows" and python.with_name("pythonw.exe").is_file():
+        python = python.with_name("pythonw.exe")  # no console window at sign-in
+    argv = [str(python), str(Path(__file__).resolve()), "resume-returns"]
+    note = "Created by Claude Relay to finish an automatic return after a restart. It removes itself when done."
+    if system == "Windows":
+        # written in text mode, so Windows gets CRLF line endings
+        return f'@echo off\nrem {note}\nstart "" {subprocess.list2cmdline(argv).replace("%", "%%")}\n'
+    if system == "Darwin":
+        return plistlib.dumps({"Label": "io.github.codewidkrish.claude-relay", "ProgramArguments": argv,
+                               "RunAtLoad": True, "Comment": note}).decode("utf-8")
+    return ("[Desktop Entry]\nType=Application\nName=Claude Relay automatic return\n"
+            f"Comment={note}\nExec={' '.join(desktop_quote(a) for a in argv)}\nNoDisplay=true\n"
+            "X-GNOME-Autostart-enabled=true\n")
+
+
+def add_startup_entry():
+    path = startup_entry()
+    content = startup_entry_content()
+    if path.is_file() and path.read_text(encoding="utf-8") == content:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_text(path, content)
+
+
+def remove_startup_entry():
+    path = startup_entry()
+    with contextlib.suppress(OSError):
+        if path.is_file() and "Claude Relay" in path.read_text(encoding="utf-8"):
+            path.unlink()
+
+
+def cmd_resume_returns(_args):
+    """Run at sign-in by the login item: restart the waiter for every return still pending."""
+    try:
+        pending = load_json(pending_file(), {})
+        pending = pending if isinstance(pending, dict) else {}
+        for entry in list(pending.values()):
+            if not isinstance(entry, dict) or not {"cwd", "to", "at", "session"} <= set(entry):
+                continue
+            if time.time() > entry["at"] + RETURN_GIVE_UP or not Path(entry["cwd"]).is_dir():
+                log(f"auto return dropped (too old or folder gone): {AGENTS.get(entry['to'], ['?'])[0]} "
+                    f"in {entry['cwd']}")
+                forget_return(entry)
+                continue
+            with session_state(entry["cwd"], f"return:{entry['to']}:{entry['session']}") as state:
+                done = state.get("returned_for") == entry["at"]
+            if done:
+                forget_return(entry)
+                continue
+            start_waiter(entry)
+            log(f"auto return resumed after sign-in: {entry['to']} at {fmt_time(entry['at'])}")
+        if not load_json(pending_file(), {}):
+            remove_startup_entry()
+    except Exception as error:
+        log(f"resume-returns error: {error}")
 
 
 def cmd_return_after_reset(args):
@@ -939,10 +1089,13 @@ def cmd_return_after_reset(args):
                 if usage and not CodexCLI.limit_reached(usage):
                     break
                 time.sleep(600)
+        entry = {"cwd": str(Path(args.cwd).resolve()), "to": args.to, "at": args.at, "session": args.session}
         with session_state(args.cwd, f"return:{args.to}:{args.session}") as state:
             if state.get("returned_for") == args.at:
+                forget_return(entry)
                 return
             state["returned_for"] = args.at
+        forget_return(entry)
         agent = AGENTS[args.to][0]
         notify("Claude Relay", f"Your {AGENTS[args.to][1]} limit has reset. Handing the work back to {agent}.")
         log(f"auto return: limit reset, handing the work back to {agent}")
@@ -1449,11 +1602,26 @@ def cmd_doctor(_args):
             installed = all(group in hooks.get(event, []) for event, group in codex_manifest.get("groups", {}).items())
             check("Codex Stop and PostModelRequest hooks installed", installed, "Run: relay.py install --codex")
             print("        → approve them once in Codex with /hooks (Codex skips hooks you haven't trusted)")
+            if codex:
+                usage = CodexCLI.read_usage()
+                shown = usage_line(usage).split("  ", 1)[-1] if usage else ""
+                check(f"Codex usage readable: {shown}" if usage else "Codex usage readable", usage,
+                      "Sign in to Codex with a ChatGPT plan. If you are signed in, Codex may have changed how it "
+                      "reports usage: update Relay. The $relay-handoff skill still works by hand.")
         else:
             print("  [TIP] Codex CLI found → run relay.py install --codex to switch Codex to Antigravity at its limit too")
     st = load_json(STATE_FILE, {})
+    missing = usage_missing_since()
+    if missing and time.time() - missing > 10 * 60:
+        print("\n  [WARN] Claude Code's status line has not reported 5-hour usage since "
+              f"{fmt_time(missing)}.\n         Usage is only reported on Pro/Max plans. If you are on one, Claude Code "
+              "may have changed\n         its format: update Relay. Until then the switch still happens when the "
+              "limit hits (StopFailure),\n         but there's no early warning or summary.")
     if st.get("five_hour_pct") is not None:
-        print(f"\n  Last seen 5-hour usage: {st['five_hour_pct']:.0f}% (resets {fmt_time(st.get('resets_at'))})")
+        age = time.time() - float(st.get("updated") or 0)
+        when = "just now" if age < 120 else f"{human_delta(age)} ago" if age < 2 * 86400 else f"{int(age // 86400)} days ago"
+        print(f"\n  Last seen Claude 5-hour usage: {st['five_hour_pct']:.0f}% (read {when}; "
+              f"resets {fmt_time(st.get('resets_at'))})")
     else:
         print("\n  No usage data yet: send one message in Claude Code (Pro/Max plans only).")
     print(f"  Mode: {cfg['mode']} | prepare at {cfg['prepare_at']}% | model in Antigravity: "
@@ -1783,6 +1951,9 @@ def read_settings():
 
 def cmd_uninstall(_args):
     removed_codex = uninstall_codex()
+    with contextlib.suppress(OSError):
+        pending_file().unlink()
+    remove_startup_entry()
     manifest_path = installation_manifest()
     manifest = load_json(manifest_path, {})
     if not manifest:
@@ -1898,6 +2069,7 @@ def build_parser():
     ret.add_argument("--to", choices=agents, required=True)
     ret.add_argument("--at", type=int, required=True)
     ret.add_argument("--session", default="manual")
+    sub.add_parser("resume-returns")
     return p
 
 
@@ -1912,6 +2084,7 @@ def main(argv=None):
      "back": cmd_back, "simulate": cmd_simulate, "preview": cmd_preview, "checkpoints": cmd_list,
          "purge-answers": cmd_purge, "config": cmd_config, "codex-hook": cmd_codex_hook,
          "watch": cmd_watch, "on-stop": cmd_on_stop, "return-after-reset": cmd_return_after_reset,
+         "resume-returns": cmd_resume_returns,
          "setup": cmd_setup, None: cmd_setup}[args.cmd](args)
     except (ValueError, OSError, subprocess.TimeoutExpired) as error:
         print(f"Relay: {error}", file=sys.stderr)

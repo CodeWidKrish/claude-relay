@@ -3,8 +3,8 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "claude-relay"
-version = "1.9.0"
+name = "claude-relay-antigravity"
+version = "1.10.0"
 description = "Hand Claude Code or Codex CLI work to Google Antigravity at the 5-hour limit, and back after the reset."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -22,7 +22,9 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development",
 ]
 

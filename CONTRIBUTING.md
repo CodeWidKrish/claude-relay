@@ -29,6 +29,16 @@ The tests never touch your real Claude Code or Codex settings. They use temporar
 - **Text copied into a checkpoint goes through `md_text()` or `fenced()`**, so it can't change the file's structure.
 - **Don't send data anywhere new.** Relay only starts CLIs the user already has.
 
+## Releasing (maintainer)
+
+1. Bump `VERSION` and `pyproject.toml`, add the `CHANGELOG.md` entry, push to `main` and wait for CI.
+2. Tag and publish a GitHub release: `git tag -a vX.Y.Z -m vX.Y.Z`, `git push origin vX.Y.Z`, then `gh release create vX.Y.Z`.
+3. Publishing the release also publishes to PyPI once this one-time setup is done:
+   - On [pypi.org](https://pypi.org/manage/account/publishing/), add a *pending trusted publisher*: project `claude-relay-antigravity`, owner `CodeWidKrish`, repository `claude-relay`, workflow `publish.yml`, environment `pypi`.
+   - In the GitHub repository settings, add a variable `PYPI_PUBLISH` with the value `true`.
+
+   No API token is needed. The `claude-relay` name on PyPI belongs to another project, which is why the package is called `claude-relay-antigravity`.
+
 ## Reporting a bug
 
 Use the bug report template and include the output of `python relay.py doctor` and `python relay.py --version`. For security problems, see [SECURITY.md](SECURITY.md).

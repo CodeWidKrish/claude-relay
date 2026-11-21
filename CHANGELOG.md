@@ -2,6 +2,18 @@
 
 All notable changes to Claude Relay. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [semantic versioning](https://semver.org/).
 
+## [1.10.0] - 2026-11-21
+
+### Added
+- The automatic return survives a restart or sign-out: pending returns are saved, and a login item (Windows Startup folder, macOS LaunchAgent or Linux autostart entry) resumes them at sign-in. It exists only while a return is pending and removes itself afterwards. Returns more than 12 hours late, or for a deleted folder, are dropped.
+- `doctor` checks that Codex usage can be read, and warns when Claude Code's status line stops reporting 5-hour usage.
+- A release workflow that publishes to PyPI with trusted publishing (off until enabled).
+
+### Changed
+- The package is named `claude-relay-antigravity`, because `claude-relay` on PyPI belongs to another project. The command is still `claude-relay`.
+- `doctor` shows how old the last Claude usage reading is.
+- `uninstall` also removes pending returns and the login item.
+
 ## [1.9.0] - 2026-11-21
 
 ### Added
@@ -69,4 +81,5 @@ All notable changes to Claude Relay. The format follows [Keep a Changelog](https
 ### Added
 - First release: automatic switch from Claude Code to Antigravity at the 5-hour limit, manual `/handoff`, and `back`.
 
+[1.10.0]: https://github.com/CodeWidKrish/claude-relay/releases/tag/v1.10.0
 [1.9.0]: https://github.com/CodeWidKrish/claude-relay/releases/tag/v1.9.0

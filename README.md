@@ -7,8 +7,8 @@
 <br>
 
 <a href="https://github.com/CodeWidKrish/claude-relay/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/CodeWidKrish/claude-relay/tests.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI" alt="CI status"></a>
-<a href="#-whats-new-in-v190-production-hardening"><img src="https://img.shields.io/badge/version-1.9.0-ff8a4c?style=for-the-badge" alt="Version 1.9.0"></a>
-<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-81%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="81 test scenarios"></a>
+<a href="#-whats-new-in-v1100-restart-safe-return"><img src="https://img.shields.io/badge/version-1.10.0-ff8a4c?style=for-the-badge" alt="Version 1.10.0"></a>
+<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-87%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="87 test scenarios"></a>
 <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Codex%20CLI-7928CA?style=for-the-badge" alt="Agents: Claude Code and Codex CLI">
 <img src="https://img.shields.io/badge/python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
 <img src="https://img.shields.io/badge/dependencies-zero-8957e5?style=for-the-badge" alt="Zero dependencies">
@@ -48,7 +48,7 @@
 
 <br>
 
-<img src="docs/assets/stats.svg" alt="81 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
+<img src="docs/assets/stats.svg" alt="87 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
 
 ## 💡 Why Relay?
 
@@ -125,6 +125,17 @@ When the limit resets, one command hands the work **back to Claude**, with a sum
 | 📦 | **Zero dependencies** | One Python file, standard library only. No API keys, no passwords. |
 | 🛡 | **Safe install** | Backs up your settings, never touches a broken settings file, and `uninstall` restores everything. |
 | 🩺 | **`doctor` and `simulate`** | A health check, plus a demo that shows the whole switch without using up your limit. |
+
+## 🆕 What's new in v1.10.0: restart-safe return
+
+- **The automatic return survives a restart.** Relay saves each pending return and adds a small login item (Startup folder on Windows, a LaunchAgent on macOS, an autostart entry on Linux) only while a return is pending. After a restart it resumes the wait, hands the work back once the limit has reset, and then removes the login item. A return more than 12 hours late, or for a deleted folder, is dropped instead of surprising you.
+- **`doctor` tells you when an agent stops reporting usage.** It checks that Codex usage can be read, and warns if Claude Code's status line has stopped sending 5-hour usage. That happens on a plan without usage limits, or if Claude Code changes its format.
+- **`doctor` shows how old the last usage reading is**, so a week-old number isn't mistaken for a live one.
+- **PyPI-ready:** the package is named `claude-relay-antigravity` (the `claude-relay` name on PyPI belongs to another project), and a release workflow publishes it with PyPI trusted publishing once it's switched on.
+- Verified live on Windows 11: the login item in a folder with a space, and `pipx install` into a folder with a space.
+- 87 tests, up from 81.
+
+<a href="docs/images/v1.10.0-restart-return.png"><img src="docs/images/v1.10.0-restart-return.png" alt="Sandbox run: Claude hits its limit, Relay saves the pending return and adds a login item; after a simulated restart the login item resumes the return, hands the work back to Claude Code and removes itself"></a>
 
 ## 🆕 What's new in v1.9.0: production hardening
 
@@ -478,7 +489,7 @@ pipx install git+https://github.com/CodeWidKrish/claude-relay
 claude-relay setup
 ```
 
-`claude-relay` takes the same commands as `python relay.py`. Upgrade later with `pipx upgrade claude-relay`, then run `claude-relay setup` again.
+`claude-relay` takes the same commands as `python relay.py`. Upgrade later with `pipx upgrade claude-relay-antigravity`, then run `claude-relay setup` again.
 
 ## 🎮 Usage
 
@@ -582,7 +593,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 <tr>
 <td width="50%" valign="top" align="center">
 <b>🩺 Check your setup</b><br><br>
-<a href="docs/images/v1.5.0-doctor.png"><img src="docs/images/v1.5.0-doctor.png" alt="relay.py doctor on Windows 11: Python, Claude Code 2.1.221, Antigravity CLI 1.5.10 and git found; status line, StopFailure hook, /handoff and /ask-antigravity installed; All good"></a>
+<a href="docs/images/v1.10.0-doctor.png"><img src="docs/images/v1.10.0-doctor.png" alt="relay.py doctor 1.10.0 on Windows 11: Claude Code 2.1.327, Antigravity 1.5.12, Codex CLI 0.166.0, settings valid, all hooks installed, Codex usage readable, All good"></a>
 </td>
 <td width="50%" valign="top" align="center">
 <b>⚡ From the usage bar to the automatic switch</b><br><br>
@@ -620,10 +631,10 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 <sub>Click any screenshot to open it full size.</sub>
 
 <details>
-<summary><b>🧪 Test run (v1.7.0 capture: 72 tests; v1.9.0 has 81)</b></summary>
+<summary><b>🧪 Test run (v1.10.0: 87 tests)</b></summary>
 <br>
 
-![28 end-to-end tests and 44 regression tests passing, including heading escaping, the summary request, the automatic return, Codex and Windows path tests](docs/images/v1.7.0-tests.png)
+![28 end-to-end tests and 59 regression tests passing, including the restart-safe return, settings validation, heading escaping, the summary request, Codex and Windows path tests](docs/images/v1.10.0-tests.png)
 
 </details>
 
@@ -653,7 +664,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 
 ## ✅ Tested conditions
 
-Run both test scripts for **81 scenarios**. The tests simulate Claude hook payloads and use a fake `agy`, a fake Codex app-server or mocked launchers. CI runs them on Windows, macOS and Linux with Python 3.8 to 3.13, and also checks lint, the installers, the package build and coverage (at least 80%).
+Run both test scripts for **87 scenarios**. The tests simulate Claude hook payloads and use a fake `agy`, a fake Codex app-server or mocked launchers. CI runs them on Windows, macOS and Linux with Python 3.8 to 3.13, and also checks lint, the installers, the package build and coverage (at least 80%).
 
 <details>
 <summary><b>🧪 Show all edge cases covered</b></summary>
@@ -803,7 +814,8 @@ Run `python relay.py install` again. Relay preserves existing slash-command file
 Stated plainly, so you know what to expect:
 
 - **Not yet recorded at a real Claude Pro limit.** The switch is tested with simulated hook payloads and verified live with Codex. The real Claude limit event has not been captured on video yet, because it needs a full 5-hour window to run out.
-- **The automatic return doesn't survive a reboot or sign-out.** It's a background waiter process. If it's gone, run `python relay.py back` yourself after the reset.
+- **The automatic return needs you to sign in again after a restart.** The login item only runs at sign-in, so if the PC restarts and nobody signs in, nothing reopens until someone does. A return more than 12 hours late is dropped; then run `python relay.py back` yourself.
+- **Not on PyPI yet.** Publishing needs a one-time PyPI setup by the maintainer (see CONTRIBUTING). Until then, install with pipx from GitHub.
 - **Codex asks you to approve the hooks** with `/hooks` once, and again after every Relay update that changes them. This is a Codex safety rule, and Relay can't skip it.
 - **Claude Code needs a restart** after `setup` before the new hooks run.
 - **Usage numbers come from the agents themselves.** Claude Code reports them in the status line, and Codex through its app-server. If either changes that format, Relay can't see usage until it's updated; `doctor` shows when that happens.
@@ -819,8 +831,9 @@ Stated plainly, so you know what to expect:
 - [x] Summary before the limit, automatic return after the reset, escaped handoff text (v1.7.0)
 - [x] One-command setup and one-line installers (v1.8.0)
 - [x] `pipx` package, tagged releases with a changelog, stricter CI (v1.9.0)
+- [x] Automatic return that survives a restart, usage-format warnings in `doctor` (v1.10.0)
 - [ ] Recorded live round trip at a real Claude Pro limit
-- [ ] Automatic return that survives a reboot
+- [ ] Published on PyPI as `claude-relay-antigravity`
 
 ## 📁 Project structure
 
@@ -831,7 +844,7 @@ claude-relay/
 ├── install.sh                # one-line installer for macOS and Linux
 ├── tests/
 │   ├── test_relay.py         # 28 end-to-end and edge-case tests
-│   ├── test_regressions.py   # 53 regression tests (sessions, locks, installs, setup, settings, ask, redaction, return, Codex)
+│   ├── test_regressions.py   # 59 regression tests (sessions, locks, installs, setup, settings, ask, redaction, return, Codex)
 │   └── sample_output.txt
 ├── docs/
 │   ├── assets/               # banner, demo GIF, architecture, stats, meter and footer
@@ -839,6 +852,7 @@ claude-relay/
 │   └── Claude_Relay_Setup_Guide.pdf
 ├── .github/
 │   ├── workflows/tests.yml   # tests, lint, installer, coverage and package checks
+│   ├── workflows/publish.yml # publishes releases to PyPI (off until enabled)
 │   ├── ISSUE_TEMPLATE/       # bug report and feature request forms
 │   ├── pull_request_template.md
 │   └── dependabot.yml

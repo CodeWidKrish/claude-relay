@@ -19,6 +19,7 @@ Knowing this helps you judge any report:
 | `~/.codex/hooks.json`, `~/.codex/skills/relay-handoff/` | With `--codex`: adds two hooks and a skill, keeping your own hooks. Codex runs them only after you approve them with `/hooks`. |
 | `~/.claude-relay/` | Settings, usage readings, session locks and a log that rotates at 512 KB |
 | `<project>/.relay/` | Checkpoints and saved answers. The folder ignores itself in git. |
+| Login item (`claude-relay-return.cmd` in the Windows Startup folder, a LaunchAgent on macOS, `~/.config/autostart/` on Linux) | Only while an automatic return is pending, so it can resume after a restart. It removes itself when the return is done, and `uninstall` removes it too. |
 
 Relay sends nothing to any server of its own. It starts the Claude Code, Codex and Antigravity CLIs you already have, and those services process what they read.
 
