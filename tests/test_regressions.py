@@ -572,6 +572,110 @@ class RelayRegressions(unittest.TestCase):
         hooks = relay.load_json(relay.CODEX_DIR / "hooks.json", {})["hooks"]
         self.assertEqual(sorted(hooks), ["PostModelRequest", "Stop"])
 
+    # ---- v1.9: production hardening -------------------------------------------------------------
+    def test_one_bad_setting_never_disables_relay(self):
+        relay.save_json(relay.CONFIG_FILE, {"prepare_at": "ninety", "warn_at": 95, "mode": "manual",
+                                            "redact": "maybe", "target_mode": 7, "diff_lines": True})
+        cfg = relay.config()
+        self.assertEqual(cfg["prepare_at"], 90, "invalid value falls back to the default")
+        self.assertEqual(cfg["mode"], "manual", "valid values are still used")
+        self.assertLess(cfg["warn_at"], cfg["prepare_at"], "warn_at is kept below prepare_at")
+        self.assertIs(cfg["redact"], True)
+        self.assertEqual((cfg["target_mode"], cfg["diff_lines"]), ("default", 200))
+        problems = relay.config_problems()
+        self.assertEqual(len(problems), 4)
+        self.assertTrue(any(p.startswith("prepare_at=") for p in problems))
+        # hooks keep working on the defaults
+        relay.save_json(relay.STATE_FILE, {})
+        payload = {"session_id": "cfg", "workspace": {"current_dir": str(self.project)},
+                   "rate_limits": {"five_hour": {"used_percentage": 95, "resets_at": 2000000000}}}
+        with patch.object(relay, "read_stdin_json", return_value=payload), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_statusline(None)
+        self.assertIn("95%", output.getvalue())
+        self.assertTrue(relay.checkpoint(self.project, "cfg").exists())
+        relay.save_text(relay.CONFIG_FILE, "[1, 2]")
+        self.assertEqual(relay.config()["prepare_at"], 90)
+        self.assertTrue(relay.config_problems())
+
+    def test_doctor_names_invalid_settings(self):
+        relay.save_json(relay.CONFIG_FILE, {"prepare_at": 20})
+        with patch.object(relay.shutil, "which", return_value=None), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.cmd_doctor(None)
+        self.assertIn("[FIX] Settings: prepare_at=20", output.getvalue())
+
+    def test_log_rotates_instead_of_growing_forever(self):
+        with patch.object(relay, "LOG_LIMIT", 200):
+            for n in range(30):
+                relay.log(f"entry {n:02d} " + "x" * 20)
+        rotated = relay.LOG_FILE.with_name(relay.LOG_FILE.name + ".1")
+        self.assertTrue(rotated.exists())
+        self.assertLess(relay.LOG_FILE.stat().st_size, 400)
+        self.assertIn("entry 29", relay.LOG_FILE.read_text(encoding="utf-8"))
+
+    def launch_on(self, system, terminals):
+        def which(name):
+            return f"/usr/bin/{name}" if name in terminals or name == "agy" else None
+        calls = []
+        with patch.object(relay, "IS_WIN", False), patch.object(relay.platform, "system", return_value=system), \
+                patch.object(relay.shutil, "which", side_effect=which), \
+                patch.object(relay.subprocess, "Popen", side_effect=lambda argv, **kw: calls.append(argv)), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            ok = relay.open_in_new_terminal(["agy", "-i", "Read it's notes"], self.project, {"dry_run": False})
+        return ok, calls, output.getvalue()
+
+    def test_macos_and_linux_open_a_real_terminal_window(self):
+        ok, calls, _ = self.launch_on("Darwin", [])
+        self.assertTrue(ok)
+        self.assertEqual(calls[0][0], "osascript")
+        self.assertIn('tell application "Terminal"', calls[0][2])
+        import shlex
+        quoted = json.dumps(shlex.quote("Read it's notes"))[1:-1]  # shell-quoted, then escaped for AppleScript
+        self.assertIn(quoted, calls[0][2], "arguments are shell-quoted")
+        ok, calls, _ = self.launch_on("Linux", ["gnome-terminal"])
+        self.assertTrue(ok)
+        self.assertEqual(calls[0][:4], ["gnome-terminal", "--", "bash", "-lc"])
+        ok, calls, out = self.launch_on("Linux", [])
+        self.assertFalse(ok, "no GUI terminal (SSH/WSL): report it instead of failing silently")
+        self.assertEqual(calls, [])
+        self.assertIn("No terminal window available", out)
+
+    def test_purge_removes_only_old_answer_files(self):
+        folder = self.project / ".relay" / "answers"
+        # the real name format: cmd_ask writes YYYYMMDD-HHMMSS-<uuid hex>.md
+        old, new = folder / "20200101-000000-0a1b.md", folder / "20991231-000000-0c2d.md"
+        for path in (old, new):
+            relay.save_text(path, "answer")
+        os.utime(old, (time.time() - 40 * 86400,) * 2)
+        relay.save_text(folder / "notes.md", "not an answer")
+        os.utime(folder / "notes.md", (time.time() - 40 * 86400,) * 2)
+        with contextlib.redirect_stdout(io.StringIO()):
+            relay.main(["purge-answers", "--older-than-days", "30", "--cwd", str(self.project)])
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists())
+        self.assertTrue((folder / "notes.md").exists(), "only Relay's own answer files are removed")
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            relay.main(["purge-answers", "--older-than-days", "0", "--cwd", str(self.project)])
+
+    def test_several_checkpoints_need_an_explicit_session(self):
+        relay.build_handoff(self.project, session="one")
+        relay.build_handoff(self.project, session="two")
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as err:
+            relay.main(["launch", "--cwd", str(self.project)])
+        self.assertIn("Multiple checkpoints found", err.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.main(["checkpoints", "--cwd", str(self.project)])
+        self.assertEqual(len(output.getvalue().strip().splitlines()), 2)
+
+    def test_help_lists_commands_and_version_matches_packaging(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()) as output:
+            relay.main(["--help"])
+        for command in ("setup", "handoff", "back", "ask", "status", "watch", "simulate"):
+            self.assertIn(command, output.getvalue())
+        pyproject = (Path(relay.__file__).resolve().parent / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn(f'version = "{relay.VERSION}"', pyproject, "pyproject.toml and relay.VERSION must match")
+
     def test_installers_download_relay_and_run_setup(self):
         root = Path(relay.__file__).resolve().parent
         for name in ("install.ps1", "install.sh"):

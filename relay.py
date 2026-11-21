@@ -47,7 +47,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 IS_WIN = platform.system() == "Windows"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
@@ -144,9 +144,51 @@ def clean_session(value):
     return value
 
 
+def stored_setting(key, value):
+    """Validate a value read from config.json (typed JSON, unlike the strings `config KEY VALUE` receives)."""
+    kind, rule = CONFIG_RULES[key]
+    if kind == "bool":
+        if isinstance(value, bool):
+            return value
+        return parse_setting(key, str(value))
+    if kind == "int":
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise ValueError(f"{key} must be a whole number")
+        return parse_setting(key, str(value))
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be text")
+    return parse_setting(key, value)
+
+
+def config_problems(stored=None):
+    """Settings in config.json that are invalid and therefore replaced by their defaults."""
+    stored = load_json(CONFIG_FILE, {}) if stored is None else stored
+    if not isinstance(stored, dict):
+        return [f"{CONFIG_FILE} is not a JSON object"]
+    problems = []
+    for key, value in stored.items():
+        if key in CONFIG_RULES:
+            try:
+                stored_setting(key, value)
+            except ValueError as error:
+                problems.append(f"{key}={json.dumps(value)}: {error}")
+    return problems
+
+
 def config():
+    """Defaults, overlaid with every valid stored setting. One bad value never disables Relay."""
     cfg = dict(DEFAULT_CONFIG)
-    cfg.update(load_json(CONFIG_FILE, {}))
+    stored = load_json(CONFIG_FILE, {})
+    for key, value in (stored.items() if isinstance(stored, dict) else ()):
+        if key in CONFIG_RULES:
+            try:
+                cfg[key] = stored_setting(key, value)
+            except ValueError:
+                continue  # doctor reports it; hooks keep working on the default
+        elif key in DEFAULT_CONFIG and isinstance(value, type(DEFAULT_CONFIG[key])):
+            cfg[key] = value
+    if cfg["warn_at"] >= cfg["prepare_at"]:
+        cfg["warn_at"] = min(DEFAULT_CONFIG["warn_at"], cfg["prepare_at"] - 1)
     if os.environ.get("RELAY_DRY_RUN") == "1":
         cfg["dry_run"] = True
     if os.environ.get("NO_COLOR"):
@@ -190,9 +232,14 @@ def fmt_time(epoch):
     return dt.datetime.fromtimestamp(epoch).strftime("%H:%M (%d %b)") if epoch else "unknown"
 
 
+LOG_LIMIT = 512 * 1024  # bytes; relay.log rotates to relay.log.1 beyond this
+
+
 def log(msg):
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size > LOG_LIMIT:
+            os.replace(LOG_FILE, LOG_FILE.with_name(LOG_FILE.name + ".1"))
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"{dt.datetime.now().isoformat(timespec='seconds')}  {msg}\n")
     except Exception:
@@ -617,7 +664,8 @@ def build_handoff(cwd, transcript=None, reason="manual", resets_at=None, session
     else:
         transcript = select_transcript(cwd, transcript, session)
         info = parse_transcript(transcript)
-    clip = lambda s, n: (s[:n] + " …") if len(s) > n else s
+    def clip(s, n):
+        return (s[:n] + " …") if len(s) > n else s
     out = checkpoint(cwd, session)
     keep_notes = keep_summary = ""
     if out.exists():  # never lose the summary or the other agent's progress notes
@@ -765,7 +813,7 @@ def notify(title, text):
 def cmd_statusline(_args):
     data = read_stdin_json()
     try:
-        cfg, state = config(), load_json(STATE_FILE, {})
+        cfg = config()
         five = ((data.get("rate_limits") or {}).get("five_hour") or {})
         pct, resets = to_float(five.get("used_percentage")), to_epoch(five.get("resets_at"))
         cwd, session, transcript = ClaudeCode.context(data)
@@ -1374,6 +1422,9 @@ def cmd_doctor(_args):
     check(f"Antigravity CLI ({cfg['target_cmd']}): {agy_version or 'unavailable'}", agy_version,
           "Install the Antigravity CLI, sign in, then run `agy` once")
     check(f"git: {'found' if shutil.which('git') else 'not found (optional)'}", True)
+    problems = config_problems()
+    check("Settings valid" if not problems else "Settings: " + "; ".join(problems) + " (using the default instead)",
+          not problems, "Fix it with: relay.py config KEY VALUE")
     here = Path(__file__).resolve().parent
     if " " in str(here) or "onedrive" in str(here).lower():
         print(f"  [TIP] Relay lives in {here}\n"
@@ -1544,7 +1595,9 @@ def cmd_install(args):
     if args.model is not None:
         cfg["target_model"] = args.model
     cfg["dry_run"] = False
-    q = lambda x: f'"{x}"' if " " in x else x  # unquoted paths also work if Claude Code uses PowerShell
+    def q(x):  # quote only when needed: unquoted paths also work if Claude Code uses PowerShell
+        return f'"{x}"' if " " in x else x
+
     py = cmd_path(sys.executable)
     for name in ("python", "python3", "py"):  # prefer a bare command: no spaces, works in every shell
         found = shutil.which(name)
@@ -1557,7 +1610,9 @@ def cmd_install(args):
     if " " in str(Path(__file__).resolve()):
         print("Tip: move this folder to a path without spaces (e.g. C:\\claude-relay) and run install again "
               "- it makes the Claude Code hooks more robust.")
-    run = lambda sub: f'{q(py)} {q(cmd_path(__file__))} {sub}'
+    def run(sub):
+        return f'{q(py)} {q(cmd_path(__file__))} {sub}'
+
     settings = read_settings()
     manifest_path = installation_manifest()
     previous = load_json(manifest_path, {})
@@ -1761,63 +1816,93 @@ def cmd_purge(args):
         raise ValueError("--older-than-days must be at least 1.")
     cutoff = time.time() - args.older_than_days * 86400
     folder = Path(args.cwd or os.getcwd()) / HANDOFF_DIR / ASK_DIR
-    for path in folder.glob("????-*.md"):
+    removed = 0
+    for path in folder.glob("*.md"):  # only Relay's own answers: YYYYMMDD-HHMMSS-<id>.md
+        if not re.fullmatch(r"\d{8}-\d{6}(-[0-9a-f]+)?\.md", path.name):
+            continue
         if path.is_file() and not path.is_symlink() and path.stat().st_mtime < cutoff:
             path.unlink()
+            removed += 1
             print(f"Removed {path}")
+    print(f"{removed} answer file(s) older than {args.older_than_days} days removed.")
 
 
-def main(argv=None):
-    p = argparse.ArgumentParser(description="Claude Code → Antigravity relay")
+def build_parser():
+    agents = ["claude", "codex"]
+    p = argparse.ArgumentParser(description="Claude Code / Codex CLI → Google Antigravity relay. "
+                                "Run with no command to set everything up.")
     p.add_argument("--version", action="version", version=VERSION)
-    sub = p.add_subparsers(dest="cmd")  # no command: guided setup
+    sub = p.add_subparsers(dest="cmd", metavar="command")
+
     sub.add_parser("setup", help="install into Claude Code and (when found) Codex CLI, then run doctor")
-    i = sub.add_parser("install")
-    i.add_argument("--mode", choices=["auto", "manual"]); i.add_argument("--threshold", type=int)
-    i.add_argument("--model")
-    i.add_argument("--codex", action="store_true", help="also add the automatic switch to Codex CLI")
-    for name in ("uninstall", "statusline", "on-limit", "doctor", "codex-hook", "on-stop"):
+    install = sub.add_parser("install", help="install with explicit settings")
+    install.add_argument("--mode", choices=["auto", "manual"])
+    install.add_argument("--threshold", type=int, help="usage %% at which the handoff is prepared (50-99)")
+    install.add_argument("--model", help="model to use inside Antigravity")
+    install.add_argument("--codex", action="store_true", help="also add the automatic switch to Codex CLI")
+    sub.add_parser("uninstall", help="remove Relay from Claude Code and Codex CLI")
+    sub.add_parser("doctor", help="check that everything needed is installed")
+
+    handoff = sub.add_parser("handoff", help="write a checkpoint (manual switch)")
+    handoff.add_argument("--launch", action="store_true", help="also open Antigravity on it")
+    handoff.add_argument("--cwd")
+    handoff.add_argument("--transcript")
+    handoff.add_argument("--agent", choices=agents, default="claude")
+    launch = sub.add_parser("launch", help="open Antigravity on an existing checkpoint")
+    launch.add_argument("--cwd")
+    back = sub.add_parser("back", help="hand the work back after the reset")
+    back.add_argument("--launch", action="store_true", help="also reopen the agent")
+    back.add_argument("--cwd")
+    back.add_argument("--resume", action="store_true", help="resume the original Claude conversation")
+    back.add_argument("--to", choices=agents)
+    preview = sub.add_parser("preview", help="show what a checkpoint contains")
+    preview.add_argument("--cwd")
+    for parser in (handoff, launch, back, preview):
+        parser.add_argument("--session")
+    listing = sub.add_parser("checkpoints", help="list the checkpoints in a project")
+    listing.add_argument("--cwd")
+
+    ask = sub.add_parser("ask", help="ask Antigravity a question without leaving your session")
+    ask.add_argument("question", nargs="?")
+    ask.add_argument("--file")
+    ask.add_argument("--cwd")
+    ask.add_argument("--allow-edits", action="store_true")
+    ask.add_argument("--timeout", type=int, default=ASK_TIMEOUT)
+    cleanup = sub.add_parser("purge-answers", help="delete old saved answers")
+    cleanup.add_argument("--cwd")
+    cleanup.add_argument("--older-than-days", type=int, required=True)
+
+    status = sub.add_parser("status", help="usage, reset countdown, checkpoints and recent activity")
+    status.add_argument("--json", action="store_true")
+    status.add_argument("--cwd")
+    status.add_argument("--agent", choices=agents)
+    watch = sub.add_parser("watch", help="poll Codex usage and switch at the limit, without hooks")
+    watch.add_argument("--agent", choices=["codex"], required=True)
+    watch.add_argument("--interval", type=int, default=120)
+    watch.add_argument("--once", action="store_true")
+    watch.add_argument("--cwd")
+    watch.add_argument("--session")
+    conf = sub.add_parser("config", help="show or change a setting")
+    conf.add_argument("key", nargs="?")
+    conf.add_argument("value", nargs="?")
+    simulate = sub.add_parser("simulate", help="demo the automatic switch without using your limit")
+    simulate.add_argument("--live", action="store_true")
+    simulate.add_argument("--cwd")
+    simulate.add_argument("--agent", choices=agents, default="claude")
+
+    # called by the agents' hooks and by Relay itself, not by people
+    for name in ("statusline", "on-limit", "on-stop", "codex-hook"):
         sub.add_parser(name)
     ret = sub.add_parser("return-after-reset")
     ret.add_argument("--cwd", required=True)
-    ret.add_argument("--to", choices=["claude", "codex"], required=True)
+    ret.add_argument("--to", choices=agents, required=True)
     ret.add_argument("--at", type=int, required=True)
     ret.add_argument("--session", default="manual")
-    status = sub.add_parser("status")
-    status.add_argument("--json", action="store_true")
-    status.add_argument("--cwd")
-    status.add_argument("--agent", choices=["claude", "codex"])
-    w = sub.add_parser("watch")
-    w.add_argument("--agent", choices=["codex"], required=True)
-    w.add_argument("--interval", type=int, default=120)
-    w.add_argument("--once", action="store_true")
-    w.add_argument("--cwd")
-    w.add_argument("--session")
-    conf = sub.add_parser("config")
-    conf.add_argument("key", nargs="?")
-    conf.add_argument("value", nargs="?")
-    h = sub.add_parser("handoff"); h.add_argument("--launch", action="store_true")
-    h.add_argument("--cwd"); h.add_argument("--transcript")
-    h.add_argument("--agent", choices=["claude", "codex"], default="claude")
-    l = sub.add_parser("launch"); l.add_argument("--cwd")
-    a = sub.add_parser("ask"); a.add_argument("question", nargs="?"); a.add_argument("--file")
-    a.add_argument("--cwd"); a.add_argument("--allow-edits", action="store_true")
-    a.add_argument("--timeout", type=int, default=ASK_TIMEOUT)
-    b = sub.add_parser("back"); b.add_argument("--launch", action="store_true"); b.add_argument("--cwd")
-    s = sub.add_parser("simulate"); s.add_argument("--live", action="store_true"); s.add_argument("--cwd")
-    s.add_argument("--agent", choices=["claude", "codex"], default="claude")
-    b.add_argument("--resume", action="store_true")
-    b.add_argument("--to", choices=["claude", "codex"])
-    preview = sub.add_parser("preview")
-    preview.add_argument("--cwd")
-    for parser in (h, l, b, preview):
-        parser.add_argument("--session")
-    listing = sub.add_parser("checkpoints")
-    listing.add_argument("--cwd")
-    cleanup = sub.add_parser("purge-answers")
-    cleanup.add_argument("--cwd")
-    cleanup.add_argument("--older-than-days", type=int, required=True)
-    args = p.parse_args(argv)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
     if getattr(args, "session", None) and clean_session(args.session) is None:
         print(f"Relay: ignoring unexpanded session ID {args.session!r}.", file=sys.stderr)
         args.session = None

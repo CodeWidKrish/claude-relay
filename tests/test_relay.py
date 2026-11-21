@@ -79,9 +79,10 @@ def main():
     session = ["--session", transcript.stem]
     handoff = project / ".relay" / "sessions" / hashlib.sha256(transcript.stem.encode()).hexdigest()[:24] / "HANDOFF.md"
     reset = int(time.time()) + 3600
-    st = lambda pct, r=reset: {"model": {"display_name": "Sonnet"}, "workspace": {"current_dir": str(project)},
-                               "transcript_path": str(transcript),
-                               "rate_limits": {"five_hour": {"used_percentage": pct, "resets_at": r}}}
+    def st(pct, r=reset):
+        return {"model": {"display_name": "Sonnet"}, "workspace": {"current_dir": str(project)},
+                "transcript_path": str(transcript),
+                "rate_limits": {"five_hour": {"used_percentage": pct, "resets_at": r}}}
     hook = {"hook_event_name": "StopFailure", "error_type": "rate_limit", "error": "rate_limit",
             "cwd": str(project), "transcript_path": str(transcript)}
     print("Claude Relay test suite\n")
@@ -194,9 +195,12 @@ def main():
     def t_missing_agy():
         e = dict(env, RELAY_DRY_RUN="0", PATH="")
         cfgf = home / ".claude-relay" / "config.json"
-        c = json.loads(cfgf.read_text()); c["target_cmd"] = "agy-not-installed"; cfgf.write_text(json.dumps(c))
+        c = json.loads(cfgf.read_text())
+        c["target_cmd"] = "agy-not-installed"
+        cfgf.write_text(json.dumps(c))
         out = run(["launch", "--cwd", str(project)] + session, env=e, expect_ok=False)
-        c["target_cmd"] = "agy"; cfgf.write_text(json.dumps(c))
+        c["target_cmd"] = "agy"
+        cfgf.write_text(json.dumps(c))
         assert "not found on PATH" in out and "run this yourself" in out
     case("17 Antigravity not installed: clear message with the exact command", t_missing_agy)
 

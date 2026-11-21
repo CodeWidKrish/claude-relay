@@ -1,8 +1,12 @@
 name: Relay tests
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
 jobs:
   tests:
+    name: tests (${{ matrix.os }}, ${{ matrix.python }})
     strategy:
       fail-fast: false
       matrix:
@@ -11,7 +15,12 @@ jobs:
         include:
           - os: ubuntu-22.04
             python: '3.8'
+          - os: ubuntu-latest
+            python: '3.10'
+          - os: ubuntu-latest
+            python: '3.13'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,3 +28,65 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python tests/test_relay.py
       - run: python tests/test_regressions.py
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # ruff is a CI-only check; Relay itself stays dependency-free
+      - run: pip install ruff
+      - run: ruff check .
+      - run: python -m py_compile relay.py
+      - name: shellcheck install.sh
+        run: shellcheck install.sh
+      - name: install.sh syntax
+        run: sh -n install.sh
+
+  installer-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.ps1 parses in PowerShell 5.1 and 7
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors; exit 1 }
+          powershell -NoProfile -Command "`$e=`$null; [void][System.Management.Automation.Language.Parser]::ParseFile('$PWD\install.ps1',[ref]`$null,[ref]`$e); if (`$e) { `$e; exit 1 }"
+
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install coverage
+      - run: coverage run --source=. --omit="tests/*" tests/test_regressions.py
+      - name: coverage report (fails below 80%)
+        run: |
+          coverage report --include=relay.py --fail-under=80 | tee coverage.txt
+          { echo '### Coverage'; echo '```'; cat coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip wheel --no-deps -w dist .
+      - run: python -m venv /tmp/pkg && /tmp/pkg/bin/pip install dist/*.whl
+      - name: installed command reports the source version
+        run: |
+          installed=$(/tmp/pkg/bin/claude-relay --version)
+          source=$(python -c "import relay; print(relay.VERSION)")
+          echo "installed=$installed source=$source"
+          test "$installed" = "$source"

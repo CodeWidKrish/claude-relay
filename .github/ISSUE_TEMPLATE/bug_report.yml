@@ -1,0 +1,44 @@
+name: Bug report
+description: Something in Claude Relay doesn't work as described
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `python relay.py doctor`
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Relay version (`python relay.py --version`)
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Which agent?
+      options: [Claude Code, Codex CLI, Both]
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux, WSL]
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Last lines of the log (optional)
+      description: "`python relay.py status` shows recent activity. Remove anything private before pasting."
+      render: text

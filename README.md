@@ -7,8 +7,8 @@
 <br>
 
 <a href="https://github.com/CodeWidKrish/claude-relay/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/CodeWidKrish/claude-relay/tests.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI" alt="CI status"></a>
-<a href="#-whats-new-in-v180-one-command-setup"><img src="https://img.shields.io/badge/version-1.8.0-ff8a4c?style=for-the-badge" alt="Version 1.8.0"></a>
-<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-74%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="74 test scenarios"></a>
+<a href="#-whats-new-in-v190-production-hardening"><img src="https://img.shields.io/badge/version-1.9.0-ff8a4c?style=for-the-badge" alt="Version 1.9.0"></a>
+<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-81%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="81 test scenarios"></a>
 <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Codex%20CLI-7928CA?style=for-the-badge" alt="Agents: Claude Code and Codex CLI">
 <img src="https://img.shields.io/badge/python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
 <img src="https://img.shields.io/badge/dependencies-zero-8957e5?style=for-the-badge" alt="Zero dependencies">
@@ -48,7 +48,7 @@
 
 <br>
 
-<img src="docs/assets/stats.svg" alt="74 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
+<img src="docs/assets/stats.svg" alt="81 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
 
 ## 💡 Why Relay?
 
@@ -125,6 +125,16 @@ When the limit resets, one command hands the work **back to Claude**, with a sum
 | 📦 | **Zero dependencies** | One Python file, standard library only. No API keys, no passwords. |
 | 🛡 | **Safe install** | Backs up your settings, never touches a broken settings file, and `uninstall` restores everything. |
 | 🩺 | **`doctor` and `simulate`** | A health check, plus a demo that shows the whole switch without using up your limit. |
+
+## 🆕 What's new in v1.9.0: production hardening
+
+- **A typo in your settings can't switch Relay off anymore.** A bad value in `config.json` used to make every hook fail silently. Now that one setting falls back to its default, and `doctor` names it.
+- **The log rotates** at 512 KB instead of growing forever.
+- **`purge-answers` really deletes old answers.** Its file pattern never matched before; a test now covers it.
+- **Install as a package:** `pipx install git+https://github.com/CodeWidKrish/claude-relay` gives you a `claude-relay` command.
+- **Stricter CI:** ruff lint, shellcheck, PowerShell parsing of the installer, an 80% coverage gate, a package build check, and Python 3.8, 3.10, 3.12 and 3.13 on Windows, macOS and Linux.
+- **Project files:** [CHANGELOG](CHANGELOG.md), [security policy](SECURITY.md), [contributing guide](CONTRIBUTING.md), issue and pull request templates, Dependabot, and tagged releases.
+- 81 tests, up from 74. The full list of changes is in the [CHANGELOG](CHANGELOG.md).
 
 ## 🆕 What's new in v1.8.0: one-command setup
 
@@ -461,6 +471,15 @@ python /path/to/claude-relay/relay.py simulate --live   # really opens Antigravi
 
 </details>
 
+### 📦 Or with pipx
+
+```bash
+pipx install git+https://github.com/CodeWidKrish/claude-relay
+claude-relay setup
+```
+
+`claude-relay` takes the same commands as `python relay.py`. Upgrade later with `pipx upgrade claude-relay`, then run `claude-relay setup` again.
+
 ## 🎮 Usage
 
 | You want to… | Do this |
@@ -601,7 +620,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 <sub>Click any screenshot to open it full size.</sub>
 
 <details>
-<summary><b>🧪 Test run (v1.7.0 capture: 72 tests; v1.8.0 has 74)</b></summary>
+<summary><b>🧪 Test run (v1.7.0 capture: 72 tests; v1.9.0 has 81)</b></summary>
 <br>
 
 ![28 end-to-end tests and 44 regression tests passing, including heading escaping, the summary request, the automatic return, Codex and Windows path tests](docs/images/v1.7.0-tests.png)
@@ -634,7 +653,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 
 ## ✅ Tested conditions
 
-Run both test scripts for **74 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers. CI runs them on Windows, macOS and Linux, plus Python 3.8 on Ubuntu.
+Run both test scripts for **81 scenarios**. The tests simulate Claude hook payloads and use a fake `agy`, a fake Codex app-server or mocked launchers. CI runs them on Windows, macOS and Linux with Python 3.8 to 3.13, and also checks lint, the installers, the package build and coverage (at least 80%).
 
 <details>
 <summary><b>🧪 Show all edge cases covered</b></summary>
@@ -779,6 +798,17 @@ Run `python relay.py install` again. Relay preserves existing slash-command file
 
 </details>
 
+## ⚠️ Known limits
+
+Stated plainly, so you know what to expect:
+
+- **Not yet recorded at a real Claude Pro limit.** The switch is tested with simulated hook payloads and verified live with Codex. The real Claude limit event has not been captured on video yet, because it needs a full 5-hour window to run out.
+- **The automatic return doesn't survive a reboot or sign-out.** It's a background waiter process. If it's gone, run `python relay.py back` yourself after the reset.
+- **Codex asks you to approve the hooks** with `/hooks` once, and again after every Relay update that changes them. This is a Codex safety rule, and Relay can't skip it.
+- **Claude Code needs a restart** after `setup` before the new hooks run.
+- **Usage numbers come from the agents themselves.** Claude Code reports them in the status line, and Codex through its app-server. If either changes that format, Relay can't see usage until it's updated; `doctor` shows when that happens.
+- **Secret masking is pattern-based.** It catches common formats, not every secret. Check a checkpoint with `python relay.py preview` before sharing it.
+
 ## 🗺 Roadmap
 
 - [x] Automatic switch at the limit, manual `/handoff`, and return with `back`
@@ -787,9 +817,10 @@ Run `python relay.py install` again. Relay preserves existing slash-command file
 - [x] `status`, `config`, `doctor` and `simulate`
 - [x] Codex CLI → Antigravity, automatic and manual (v1.6.0)
 - [x] Summary before the limit, automatic return after the reset, escaped handoff text (v1.7.0)
+- [x] One-command setup and one-line installers (v1.8.0)
+- [x] `pipx` package, tagged releases with a changelog, stricter CI (v1.9.0)
 - [ ] Recorded live round trip at a real Claude Pro limit
-- [ ] One-command install (`pipx install` / `uv tool install`)
-- [ ] Tagged GitHub releases with a changelog
+- [ ] Automatic return that survives a reboot
 
 ## 📁 Project structure
 
@@ -800,13 +831,21 @@ claude-relay/
 ├── install.sh                # one-line installer for macOS and Linux
 ├── tests/
 │   ├── test_relay.py         # 28 end-to-end and edge-case tests
-│   ├── test_regressions.py   # 46 regression tests (sessions, locks, installs, setup, ask, redaction, return, Codex)
+│   ├── test_regressions.py   # 53 regression tests (sessions, locks, installs, setup, settings, ask, redaction, return, Codex)
 │   └── sample_output.txt
 ├── docs/
 │   ├── assets/               # banner, demo GIF, architecture, stats, meter and footer
 │   ├── images/               # screenshots used in this README
 │   └── Claude_Relay_Setup_Guide.pdf
-├── .github/workflows/tests.yml
+├── .github/
+│   ├── workflows/tests.yml   # tests, lint, installer, coverage and package checks
+│   ├── ISSUE_TEMPLATE/       # bug report and feature request forms
+│   ├── pull_request_template.md
+│   └── dependabot.yml
+├── pyproject.toml            # package metadata (pipx install) and ruff settings
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── SECURITY.md
 ├── README.md
 └── LICENSE
 ```

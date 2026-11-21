@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-relay"
+version = "1.9.0"
+description = "Hand Claude Code or Codex CLI work to Google Antigravity at the 5-hour limit, and back after the reset."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Krish Hingu" }]
+requires-python = ">=3.8"
+dependencies = []
+keywords = ["claude-code", "codex", "antigravity", "ai-agents", "cli", "handoff", "rate-limit"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://github.com/CodeWidKrish/claude-relay"
+Issues = "https://github.com/CodeWidKrish/claude-relay/issues"
+Changelog = "https://github.com/CodeWidKrish/claude-relay/blob/main/CHANGELOG.md"
+
+[project.scripts]
+claude-relay = "relay:main"
+
+[tool.setuptools]
+py-modules = ["relay"]
+
+# Lint rules enforced in CI: pyflakes, pycodestyle errors and warnings, and bugbear.
+[tool.ruff]
+target-version = "py38"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+ignore = ["E501"]  # long lines are wrapped where it helps readability; 120 is a guide, not a rule
