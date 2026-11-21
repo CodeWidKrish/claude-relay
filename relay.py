@@ -6,6 +6,7 @@ Claude Relay - continue your Claude Code or Codex CLI work in Google Antigravity
 Pure Python standard library (3.8+). Windows, macOS and Linux.
 
 Commands
+  relay.py                        set everything up: Claude Code, plus Codex CLI when found (same as `setup`)
   relay.py doctor                 check that everything needed is installed
   relay.py install [--mode auto|manual] [--threshold 90] [--model "Claude Sonnet 4.6"] [--codex]
   relay.py uninstall              remove Relay from Claude Code (and Codex, if installed there)
@@ -46,7 +47,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 IS_WIN = platform.system() == "Windows"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
@@ -1516,6 +1517,24 @@ def cmd_config(args):
     print(f"{args.key} = {json.dumps(stored[args.key])}")
 
 
+def cmd_setup(_args):
+    """`python relay.py` with no command: install into every agent found on this PC, then check everything."""
+    claude = bool(shutil.which(ClaudeCode.executable) or CLAUDE_DIR.exists())
+    codex = bool(shutil.which(CodexCLI.executable) or CODEX_DIR.exists())
+    print(f"Claude Relay {VERSION} setup\n")
+    print(f"  Claude Code : {'found' if claude else 'not found (Relay is installed for it anyway)'}")
+    print(f"  Codex CLI   : {'found -> installing its hooks too' if codex else 'not found (skipped)'}")
+    print(f"  Antigravity : {'found' if shutil.which(config()['target_cmd']) else 'not found: install the Antigravity CLI'}\n")
+    cmd_install(argparse.Namespace(mode=None, threshold=None, model=None, codex=codex))
+    print()
+    cmd_doctor(None)
+    print("\nYou're set. Keep using Claude Code" + (" and Codex" if codex else "") + " as usual; Relay runs in the background.")
+    print("  1. Restart Claude Code once.")
+    if codex:
+        print("  2. In Codex, type /hooks once and approve the two Claude Relay hooks (Codex asks for every new hook).")
+    print("  Try the switch without using your limit: python relay.py simulate" + (" --agent codex" if codex else ""))
+
+
 def cmd_install(args):
     cfg = config()
     if args.mode:
@@ -1751,7 +1770,8 @@ def cmd_purge(args):
 def main(argv=None):
     p = argparse.ArgumentParser(description="Claude Code → Antigravity relay")
     p.add_argument("--version", action="version", version=VERSION)
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")  # no command: guided setup
+    sub.add_parser("setup", help="install into Claude Code and (when found) Codex CLI, then run doctor")
     i = sub.add_parser("install")
     i.add_argument("--mode", choices=["auto", "manual"]); i.add_argument("--threshold", type=int)
     i.add_argument("--model")
@@ -1806,7 +1826,8 @@ def main(argv=None):
      "status": cmd_status, "doctor": cmd_doctor, "handoff": cmd_handoff, "launch": cmd_launch, "ask": cmd_ask,
      "back": cmd_back, "simulate": cmd_simulate, "preview": cmd_preview, "checkpoints": cmd_list,
          "purge-answers": cmd_purge, "config": cmd_config, "codex-hook": cmd_codex_hook,
-         "watch": cmd_watch, "on-stop": cmd_on_stop, "return-after-reset": cmd_return_after_reset}[args.cmd](args)
+         "watch": cmd_watch, "on-stop": cmd_on_stop, "return-after-reset": cmd_return_after_reset,
+         "setup": cmd_setup, None: cmd_setup}[args.cmd](args)
     except (ValueError, OSError, subprocess.TimeoutExpired) as error:
         print(f"Relay: {error}", file=sys.stderr)
         sys.exit(2)

@@ -7,8 +7,8 @@
 <br>
 
 <a href="https://github.com/CodeWidKrish/claude-relay/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/CodeWidKrish/claude-relay/tests.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI" alt="CI status"></a>
-<a href="#-whats-new-in-v170-review-feedback-fixed"><img src="https://img.shields.io/badge/version-1.7.0-ff8a4c?style=for-the-badge" alt="Version 1.7.0"></a>
-<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-72%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="72 test scenarios"></a>
+<a href="#-whats-new-in-v180-one-command-setup"><img src="https://img.shields.io/badge/version-1.8.0-ff8a4c?style=for-the-badge" alt="Version 1.8.0"></a>
+<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-74%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="74 test scenarios"></a>
 <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Codex%20CLI-7928CA?style=for-the-badge" alt="Agents: Claude Code and Codex CLI">
 <img src="https://img.shields.io/badge/python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
 <img src="https://img.shields.io/badge/dependencies-zero-8957e5?style=for-the-badge" alt="Zero dependencies">
@@ -48,7 +48,7 @@
 
 <br>
 
-<img src="docs/assets/stats.svg" alt="72 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
+<img src="docs/assets/stats.svg" alt="74 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
 
 ## 💡 Why Relay?
 
@@ -125,6 +125,12 @@ When the limit resets, one command hands the work **back to Claude**, with a sum
 | 📦 | **Zero dependencies** | One Python file, standard library only. No API keys, no passwords. |
 | 🛡 | **Safe install** | Backs up your settings, never touches a broken settings file, and `uninstall` restores everything. |
 | 🩺 | **`doctor` and `simulate`** | A health check, plus a demo that shows the whole switch without using up your limit. |
+
+## 🆕 What's new in v1.8.0: one-command setup
+
+- **One-line install** for Windows (`irm …/install.ps1 | iex`) and macOS/Linux (`curl …/install.sh | sh`): downloads Relay and sets it up for Claude Code and Codex in one step. [See Quick start](#-quick-start).
+- **`python relay.py` with no command** now runs `setup`: it finds Claude Code and Codex CLI, installs Relay into each one it finds, and runs `doctor`. After that you just keep using your agents.
+- 74 tests, up from 72.
 
 ## 🆕 What's new in v1.7.0: review feedback, fixed
 
@@ -393,14 +399,40 @@ sequenceDiagram
 > [!IMPORTANT]
 > **You need:** Python 3.8+ · [Claude Code](https://code.claude.com) signed in with **Claude Pro or Max** (only subscription plans send 5-hour usage data) · Antigravity CLI (`agy`) installed and signed in · git *(optional, for diffs and the return summary)*
 
-**1️⃣ Get the code**
+### ⚡ One-line install (recommended)
+
+One command downloads `relay.py`, finds Claude Code and Codex CLI on your PC, installs Relay into **both**, and runs the health check.
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/CodeWidKrish/claude-relay/main/install.ps1 | iex
+```
+
+**macOS / Linux**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CodeWidKrish/claude-relay/main/install.sh | sh
+```
+
+Then:
+1. **Restart Claude Code once.**
+2. **Using Codex?** Open `codex`, type `/hooks` once and approve the two Claude Relay hooks. Codex asks you to approve every new hook; no tool can skip that.
+
+**That's it. Keep working in Claude Code and Codex as usual.** Relay watches your usage in the background, writes the handoff at 90%, opens Antigravity at the limit and brings the work back after the reset.
+
+> [!NOTE]
+> The installers are short and only download `relay.py` (or update an existing git clone) before running `relay.py setup`. Read [`install.ps1`](install.ps1) or [`install.sh`](install.sh) first if you like. They install to `C:\claude-relay` on Windows (no spaces, outside OneDrive) and `~/.claude-relay/app` elsewhere; set `RELAY_DIR` to choose another folder.
+
+### 🧰 Or with git
 
 ```bash
 git clone https://github.com/CodeWidKrish/claude-relay.git
 cd claude-relay
+python relay.py          # sets up Claude Code, plus Codex CLI when it's installed, then runs doctor
 ```
 
-**2️⃣ Check your system and run the tests**
+To check everything yourself first:
 
 ```bash
 python relay.py doctor
@@ -408,20 +440,10 @@ python tests/test_relay.py
 python tests/test_regressions.py
 ```
 
-**3️⃣ Install into Claude Code**
-
-```bash
-python relay.py install --mode auto --threshold 90
-python relay.py doctor          # ✅ All good
-```
-
-**4️⃣ Restart Claude Code.** You're done. 🎉
-
-**Using Codex CLI too?** Add `--codex`, then approve Relay's two hooks once inside Codex:
+To install with your own settings instead of `setup`:
 
 ```bash
 python relay.py install --mode auto --threshold 90 --codex
-codex          # then type /hooks and approve the two Claude Relay hooks
 ```
 
 > [!TIP]
@@ -471,6 +493,7 @@ python /path/to/claude-relay/relay.py simulate --live   # really opens Antigravi
 
 | Command | What it does |
 |---|---|
+| *(no command)* or `setup` | Installs into Claude Code, plus Codex CLI when it's found, then runs `doctor` |
 | `install [--mode auto\|manual] [--threshold 90] [--model "<name>"] [--codex]` | Adds the status line, `StopFailure` hook, `/handoff` and `/ask-antigravity` to Claude Code. `--codex` also adds the Codex hooks and the `$relay-handoff` skill. |
 | `doctor` | Checks Python, `claude`, `agy`, git, the install path and the installation |
 | `ask "<question>" \| --file F [--allow-edits] [--timeout 600]` | Asks Antigravity in headless mode, with named files attached, and prints the answer |
@@ -578,7 +601,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 <sub>Click any screenshot to open it full size.</sub>
 
 <details>
-<summary><b>🧪 All 72 tests passing (v1.7.0)</b></summary>
+<summary><b>🧪 Test run (v1.7.0 capture: 72 tests; v1.8.0 has 74)</b></summary>
 <br>
 
 ![28 end-to-end tests and 44 regression tests passing, including heading escaping, the summary request, the automatic return, Codex and Windows path tests](docs/images/v1.7.0-tests.png)
@@ -611,7 +634,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 
 ## ✅ Tested conditions
 
-Run both test scripts for **72 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers. CI runs them on Windows, macOS and Linux, plus Python 3.8 on Ubuntu.
+Run both test scripts for **74 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers. CI runs them on Windows, macOS and Linux, plus Python 3.8 on Ubuntu.
 
 <details>
 <summary><b>🧪 Show all edge cases covered</b></summary>
@@ -773,9 +796,11 @@ Run `python relay.py install` again. Relay preserves existing slash-command file
 ```text
 claude-relay/
 ├── relay.py                  # the whole tool (standard library only)
+├── install.ps1               # one-line installer for Windows
+├── install.sh                # one-line installer for macOS and Linux
 ├── tests/
 │   ├── test_relay.py         # 28 end-to-end and edge-case tests
-│   ├── test_regressions.py   # 44 regression tests (sessions, locks, installs, ask, redaction, return, Codex)
+│   ├── test_regressions.py   # 46 regression tests (sessions, locks, installs, setup, ask, redaction, return, Codex)
 │   └── sample_output.txt
 ├── docs/
 │   ├── assets/               # banner, demo GIF, architecture, stats, meter and footer
