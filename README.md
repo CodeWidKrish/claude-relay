@@ -7,8 +7,8 @@
 <br>
 
 <a href="https://github.com/CodeWidKrish/claude-relay/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/CodeWidKrish/claude-relay/tests.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI" alt="CI status"></a>
-<a href="#-whats-new-in-v160-codex-cli-support"><img src="https://img.shields.io/badge/version-1.6.0-ff8a4c?style=for-the-badge" alt="Version 1.6.0"></a>
-<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-66%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="66 test scenarios"></a>
+<a href="#-whats-new-in-v170-review-feedback-fixed"><img src="https://img.shields.io/badge/version-1.7.0-ff8a4c?style=for-the-badge" alt="Version 1.7.0"></a>
+<a href="#-tested-conditions"><img src="https://img.shields.io/badge/tests-72%20scenarios-2ea043?style=for-the-badge&logo=pytest&logoColor=white" alt="72 test scenarios"></a>
 <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Codex%20CLI-7928CA?style=for-the-badge" alt="Agents: Claude Code and Codex CLI">
 <img src="https://img.shields.io/badge/python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
 <img src="https://img.shields.io/badge/dependencies-zero-8957e5?style=for-the-badge" alt="Zero dependencies">
@@ -48,7 +48,7 @@
 
 <br>
 
-<img src="docs/assets/stats.svg" alt="66 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
+<img src="docs/assets/stats.svg" alt="72 automated tests, 0 dependencies, 1 Python file, 3 operating systems, 10 secret patterns" width="100%">
 
 ## 💡 Why Relay?
 
@@ -113,7 +113,8 @@ When the limit resets, one command hands the work **back to Claude**, with a sum
 | 📝 | **Prepares early** | The handoff is written at 90%, while Claude can still answer. At 100% it can't. |
 | ⚡ | **Automatic switch** | When the usage limit stops Claude, Antigravity opens with the task loaded and you get a desktop notification. |
 | 🖐 | **Manual switch** | Type `/handoff` at any time. Claude adds its own summary first. |
-| ↩️ | **Switch back** | `relay.py back --launch` reopens the agent the work came from with Antigravity's notes, plus the commits and files changed since the handoff. |
+| ↩️ | **Switch back, automatically** | After an automatic switch, Relay reopens the agent the work came from as soon as its limit resets, with Antigravity's notes and the commits and files changed since the handoff. `relay.py back --launch` does the same by hand. |
+| ✍️ | **Summary before the limit** | At 90%, a `Stop` hook asks Claude (or Codex) to write its own summary into the handoff while it can still answer |
 | 🤖 | **Codex CLI too** | The same automatic and manual switch for OpenAI Codex CLI, through Codex's own hooks and app-server. [Details below](#-codex-cli--antigravity). |
 | 🚀 | **Faster Antigravity** | `config target_mode accept-edits` opens Antigravity with file edits approved automatically after a handoff |
 | 🔐 | **Secret redaction** | Keys, tokens and passwords are masked in every checkpoint and in attached files. |
@@ -125,7 +126,27 @@ When the limit resets, one command hands the work **back to Claude**, with a sum
 | 🛡 | **Safe install** | Backs up your settings, never touches a broken settings file, and `uninstall` restores everything. |
 | 🩺 | **`doctor` and `simulate`** | A health check, plus a demo that shows the whole switch without using up your limit. |
 
-## 🆕 What's new in v1.6.0: Codex CLI support
+## 🆕 What's new in v1.7.0: review feedback, fixed
+
+A technical review of v1.4 listed what was missing. Every code-level point is fixed and tested:
+
+| Review point | v1.7.0 |
+|---|---|
+| **Pasted text can break the handoff's headings** | Everything copied into the handoff (requests, answers, task names, commands, diffs) is escaped. A pasted `## Progress since handoff`, `# Title` or code fence stays plain text, and code blocks use a fence longer than any backticks inside. |
+| **No summary is written before the limit hits** | At 90% a `Stop` hook asks Claude Code (and Codex) **once** to write its own summary into a new **Summary from the previous agent** section, while it can still answer. The summary survives rebuilds of the handoff. |
+| **Switching back is manual** | After an automatic switch, a background waiter reopens the source agent **as soon as the limit resets** (Codex: confirmed with the app-server first). Antigravity is told the reset time, so it stops at a clean point and writes its notes. Turn it off with `config auto_return off`. |
+| **Windows paths with spaces** | Fixed in v1.6.0: `.cmd` launchers under `C:\Users\First Last\` start correctly |
+| **Antigravity picking up the task isn't shown** | Shown live in v1.6.0: Antigravity finished two real tasks after a Codex handoff ([screenshots](#-codex-cli--antigravity)) |
+| **No live test at a real Claude Pro limit** | Still simulated. The limit can't be triggered on demand, so `simulate --live` drives the same hooks; see the [smoke test](#live-round-trip-smoke-test) to verify it on your account |
+
+<div align="center">
+<img src="docs/images/v1.7.0-summary-and-return.png" alt="relay.py simulate: status line climbs to 92%, the Stop hook asks Claude to write its own summary, the limit hook opens Antigravity and schedules the automatic return to Claude Code at the reset time" width="90%">
+</div>
+
+<details>
+<summary><b>📜 v1.6.0: Codex CLI support</b></summary>
+<br>
+
 
 Relay now hands off from **OpenAI Codex CLI** too, automatically at the limit, using only Codex's own documented features.
 
@@ -140,6 +161,8 @@ Relay now hands off from **OpenAI Codex CLI** too, automatically at the limit, u
 | 🧪 | **66 tests**, up from 54 | A fake Codex app-server speaks the same protocol, so the tests run without an account |
 | 🚀 | **Faster, focused Antigravity** | `config target_mode accept-edits` approves file edits automatically, and the launch instruction keeps Antigravity on your project instead of Relay's own files |
 | 🪟 | **Windows paths with spaces** | npm-installed `.cmd` launchers (such as `codex.cmd` under `C:\Users\First Last\`) now start correctly; found and fixed during live testing |
+
+</details>
 
 <details>
 <summary><b>📜 v1.5.0: safer, richer handoffs</b></summary>
@@ -464,6 +487,8 @@ python /path/to/claude-relay/relay.py simulate --live   # really opens Antigravi
 | `uninstall` | Removes Relay and restores your previous status line |
 | `statusline`, `on-limit` | Called by Claude Code (not by you) |
 | `codex-hook` | Called by Codex CLI's `Stop` and `PostModelRequest` hooks (not by you) |
+| `on-stop` | Called by Claude Code's `Stop` hook to ask for the summary at 90% (not by you) |
+| `return-after-reset` | Started by Relay after an automatic switch; reopens the source agent after the reset (not by you) |
 
 <details>
 <summary><b>⚙️ Configuration</b> (<code>~/.claude-relay/config.json</code>)</summary>
@@ -480,6 +505,7 @@ python /path/to/claude-relay/relay.py simulate --live   # really opens Antigravi
 | `color` | `true` | Coloured status line (also honours `NO_COLOR`) |
 | `redact` | `true` | Mask keys, tokens and passwords in checkpoints and in files attached to `ask` |
 | `diff_lines` | `200` | Lines of uncommitted diff copied into a checkpoint (`0` turns it off) |
+| `auto_return` | `true` | After an automatic switch, reopen the source agent once its limit resets |
 
 Change any of these with `python relay.py config KEY VALUE`. Environment variables: `RELAY_DRY_RUN=1` (print instead of launching), `RELAY_HOME`, `CLAUDE_CONFIG_DIR`.
 
@@ -500,6 +526,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 - 🔐 Keys, tokens and passwords masked as `[REDACTED]`
 - ⏰ When the Claude limit resets
 - 📌 Instructions for the next agent
+- 📝 **Summary from the previous agent**, written by Claude or Codex itself at 90% and kept when the handoff is rebuilt
 - ✍️ **Progress since handoff**, filled in by Antigravity and kept when the handoff is rebuilt
 - ↩️ **Returned to Claude Code**, added by `back`: commits, changed files and new files since the handoff
 
@@ -551,10 +578,10 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 <sub>Click any screenshot to open it full size.</sub>
 
 <details>
-<summary><b>🧪 All 66 tests passing (v1.6.0)</b></summary>
+<summary><b>🧪 All 72 tests passing (v1.7.0)</b></summary>
 <br>
 
-![28 end-to-end tests and 38 regression tests passing, including the Codex hook, install, simulation and Windows path tests](docs/images/v1.6.0-tests.png)
+![28 end-to-end tests and 44 regression tests passing, including heading escaping, the summary request, the automatic return, Codex and Windows path tests](docs/images/v1.7.0-tests.png)
 
 </details>
 
@@ -584,7 +611,7 @@ Session checkpoints are saved as Markdown under `.relay/sessions/`. Manual CLI h
 
 ## ✅ Tested conditions
 
-Run both test scripts for **66 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers. CI runs them on Windows, macOS and Linux, plus Python 3.8 on Ubuntu.
+Run both test scripts for **72 scenarios**. The tests simulate Claude hook payloads and use a fake `agy` or mocked launchers. CI runs them on Windows, macOS and Linux, plus Python 3.8 on Ubuntu.
 
 <details>
 <summary><b>🧪 Show all edge cases covered</b></summary>
@@ -618,6 +645,12 @@ Run both test scripts for **66 scenarios**. The tests simulate Claude hook paylo
 | A question naming `.env`, key files, big files or files outside the project | Never attached; only safe, small project files are |
 | Antigravity is denied a tool in headless mode | One retry that asks for an answer without tools |
 | An invalid `config` value | Rejected with the allowed range; nothing is saved |
+| A request, answer, task or command containing `## Progress since handoff`, `# Title` or code fences | Escaped; the handoff keeps exactly one of each of its own sections |
+| Usage passes 90% at the end of a Claude or Codex turn | The agent is asked once per usage window to write its summary; never while already continuing |
+| A stale usage reading (older than 15 minutes) | No summary request |
+| The summary and the next agent's notes when the handoff is rebuilt | Both kept; pasted look-alike headings are never mistaken for them |
+| Automatic switch with a known reset time | One background waiter; it reopens the source agent once, even if woken twice |
+| `auto_return` off, unknown reset time, or dry run | No waiter; Relay says why |
 | Codex usage read through the app-server | 5-hour and weekly usage, plan and reset time parsed; `None` when Codex is missing |
 | Codex crosses 90%, then reaches the limit | Checkpoint prepared once; one Antigravity window, even if the hook fires again |
 | Codex request fails at the limit (`PostModelRequest`) | Switch triggered immediately; successful requests return without reading usage |
@@ -630,6 +663,8 @@ Run both test scripts for **66 scenarios**. The tests simulate Claude hook paylo
 </details>
 
 > [!NOTE]
+> **v1.7.0 live check:** the summary request and automatic return were run through `simulate` on Windows 11, and the background waiter was confirmed to keep running after the hook process exits.
+>
 > **v1.6.0 live check:** Windows 11, Python 3.14, Claude Code 2.1.327, Codex CLI 0.166.0 and Antigravity CLI 1.5.10–1.5.12. The full **Codex → Antigravity → Codex** round trip ran live with real windows: a real Codex hook, a manual `$relay-handoff`, an automatic switch with simulated usage, Antigravity finishing both tasks, and `back` reopening Codex ([details](#-codex-cli--antigravity)). For Claude Code, `doctor` and three live `ask` calls were run against the real CLIs; its automatic switch and return trip were run as dry runs.
 
 ## 🧯 Troubleshooting
@@ -728,7 +763,8 @@ Run `python relay.py install` again. Relay preserves existing slash-command file
 - [x] Secret redaction, diff excerpts and the "what changed" summary
 - [x] `status`, `config`, `doctor` and `simulate`
 - [x] Codex CLI → Antigravity, automatic and manual (v1.6.0)
-- [ ] Recorded live round trip with both CLIs signed in
+- [x] Summary before the limit, automatic return after the reset, escaped handoff text (v1.7.0)
+- [ ] Recorded live round trip at a real Claude Pro limit
 - [ ] One-command install (`pipx install` / `uv tool install`)
 - [ ] Tagged GitHub releases with a changelog
 
@@ -739,7 +775,7 @@ claude-relay/
 ├── relay.py                  # the whole tool (standard library only)
 ├── tests/
 │   ├── test_relay.py         # 28 end-to-end and edge-case tests
-│   ├── test_regressions.py   # 38 regression tests (sessions, locks, installs, ask, redaction, return, Codex)
+│   ├── test_regressions.py   # 44 regression tests (sessions, locks, installs, ask, redaction, return, Codex)
 │   └── sample_output.txt
 ├── docs/
 │   ├── assets/               # banner, demo GIF, architecture, stats, meter and footer

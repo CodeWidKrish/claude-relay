@@ -46,7 +46,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 IS_WIN = platform.system() == "Windows"
 HOME = Path.home()
 STATE_DIR = Path(os.environ.get("RELAY_HOME", HOME / ".claude-relay"))
@@ -73,6 +73,7 @@ DEFAULT_CONFIG = {
     "dry_run": False,        # print launch commands instead of running them
     "redact": True,          # mask API keys, tokens and passwords in checkpoints
     "diff_lines": 200,       # max lines of uncommitted diff copied into a checkpoint (0 = none)
+    "auto_return": True,     # after an automatic switch, reopen the source agent once its limit resets
 }
 
 
@@ -566,6 +567,45 @@ def checkpoint(cwd, session=None):
     return folder / HANDOFF_NAME
 
 
+SUMMARY_HEADING = "## Summary from the previous agent"
+SUMMARY_EMPTY = "- (empty: the previous agent writes its own summary here once usage passes the prepare threshold)"
+NOTES_HEADING = "## Progress since handoff"
+
+
+def md_text(text, indent=""):
+    """Copy free text (prompts, answers, notes) into the handoff without letting it change the file's structure.
+
+    A line that starts with '#' or a code fence would otherwise become a heading or open a code block, and a
+    pasted '## Progress since handoff' would hijack the section the next agent writes into.
+    """
+    lines = []
+    for line in str(text).splitlines() or [""]:
+        stripped = line.lstrip()
+        if stripped.startswith(("#", "```", "~~~")):
+            line = line[:len(line) - len(stripped)] + "\\" + stripped
+        lines.append(line)
+    return ("\n" + indent).join(lines)
+
+
+def fenced(content, lang=""):
+    """A code block whose fence is longer than any run of backticks inside, so the content can't close it."""
+    longest = max((len(run) for run in re.findall(r"`+", content)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return [fence + lang, content, fence]
+
+
+def section(text, heading, to_end=False):
+    """Body of a '## ' section that starts at a line equal to heading (escaped look-alikes never match)."""
+    match = re.search(r"^" + re.escape(heading) + r"[ \t]*$", text, re.M)
+    if not match:
+        return ""
+    body = text[match.end():]
+    if not to_end:
+        nxt = re.search(r"^## ", body, re.M)
+        body = body[:nxt.start()] if nxt else body
+    return body.strip()
+
+
 def build_handoff(cwd, transcript=None, reason="manual", resets_at=None, session=None, source="claude",
                   last_message=None):
     cwd = Path(cwd).resolve()
@@ -578,11 +618,13 @@ def build_handoff(cwd, transcript=None, reason="manual", resets_at=None, session
         info = parse_transcript(transcript)
     clip = lambda s, n: (s[:n] + " …") if len(s) > n else s
     out = checkpoint(cwd, session)
-    keep_notes = ""
-    if out.exists():  # never lose the other agent's progress notes
+    keep_notes = keep_summary = ""
+    if out.exists():  # never lose the summary or the other agent's progress notes
         old = out.read_text(encoding="utf-8", errors="ignore")
-        if "## Progress since handoff" in old:
-            keep_notes = old.split("## Progress since handoff", 1)[1].strip()
+        keep_notes = section(old, NOTES_HEADING, to_end=True)
+        keep_summary = section(old, SUMMARY_HEADING)
+        if keep_summary == SUMMARY_EMPTY:
+            keep_summary = ""
     L = ["# Handoff: continue this task", "",
          f"- **Created:** {dt.datetime.now():%d %b %Y, %H:%M}",
          f"- **Reason:** {reason}",
@@ -591,36 +633,42 @@ def build_handoff(cwd, transcript=None, reason="manual", resets_at=None, session
          f"- **Project folder:** `{cwd}`",
          f"- **Source session:** {session or 'unidentified'}",
          f"- **Transcript:** {'available' if transcript else 'unavailable'}", "",
-         "## Original goal", clip(info["first_request"] or "(not found in transcript – ask the user)", 2000), "",
+         "## Original goal", md_text(clip(info["first_request"] or "(not found in transcript – ask the user)", 2000)), "",
+         SUMMARY_HEADING, keep_summary or SUMMARY_EMPTY, "",
          "## Most recent requests (oldest → newest)"]
-    L += [f"{i}. {clip(r, 600)}" for i, r in enumerate(info["recent_requests"], 1)] or ["- (none)"]
-    L += ["", "## Last recorded agent update (including reported tests and next steps)", clip(info["last_answer"] or "(no answer recorded)", 2500), ""]
+    L += [f"{i}. {md_text(clip(r, 600), '   ')}" for i, r in enumerate(info["recent_requests"], 1)] or ["- (none)"]
+    L += ["", "## Last recorded agent update (including reported tests and next steps)",
+          md_text(clip(info["last_answer"] or "(no answer recorded)", 2500)), ""]
     if info["todos"]:
         L.append("## Task list")
         for t in info["todos"]:
             t = t if isinstance(t, dict) else {"content": str(t)}
-            L.append(f"- [{'x' if t.get('status') == 'completed' else ' '}] "
-                     f"{t.get('content') or t.get('subject') or ''}  ({t.get('status', '')})")
+            text = " ".join(str(t.get("content") or t.get("subject") or "").split())
+            L.append(f"- [{'x' if t.get('status') == 'completed' else ' '}] {md_text(text)}  ({t.get('status', '')})")
         L.append("")
     L.append("## Files changed in that session")
     L += [f"- `{f}`" for f in info["files_changed"]] or ["- (none)"]
     if info["commands"]:
-        L += ["", "## Last commands run", "```"] + info["commands"] + ["```"]
+        L += ["", "## Last commands run"] + fenced("\n".join(info["commands"]))
     g = git_summary(cwd)
     if g:
-        L += ["", "## Git state", "```", g, "```"]
+        L += ["", "## Git state"] + fenced(g)
         head = git(cwd, "rev-parse", "HEAD").strip()
         if head:
             L += ["", f"- **Git commit at handoff:** {head}"]
     cfg = config()
     excerpt = git_diff_excerpt(cwd, int(cfg.get("diff_lines") or 0))
     if excerpt:
-        L += ["", "## Uncommitted changes (excerpt)", "```diff", excerpt, "```"]
+        L += ["", "## Uncommitted changes (excerpt)"] + fenced(excerpt, "diff")
     L += ["", "## Instructions for the next agent",
-          "1. Read this file and the files listed above before changing anything.",
+          "1. Start with 'Summary from the previous agent' when it is filled in, then read this file and the files "
+          "listed above before changing anything.",
           "2. Continue from 'Last recorded agent update' and the task list. Do not redo finished work.",
+          f"3. {short}'s limit resets at {fmt_time(resets_at)}. Before then, stop at a clean point and add short "
+          "notes to 'Progress since handoff' below, so the work can move back."
+          if resets_at else
           "3. As you work, add short notes to 'Progress since handoff' below, so the work can move back.",
-          "", "## Progress since handoff", keep_notes or "- (next agent: add notes here)", ""]
+          "", NOTES_HEADING, keep_notes or "- (next agent: add notes here)", ""]
     relay_folder(cwd)
     text = "\n".join(L)
     save_text(out, redact(text) if cfg.get("redact", True) else text)
@@ -765,6 +813,7 @@ def cmd_on_limit(_args):
                     else:
                         state["last_switch"] = time.time()
                         msg += " Antigravity launch requested."
+                    msg += " " + schedule_return(cwd, session, "claude", to_epoch(resets), cfg)
                 else:
                     msg += " Antigravity launch failed. Retry with relay.py launch."
             if not cfg["dry_run"]:
@@ -772,6 +821,103 @@ def cmd_on_limit(_args):
             print(json.dumps({"systemMessage": f"Claude Relay: {msg} ({path})"}))
     except Exception as error:
         log(f"on-limit error: {error}")
+
+
+def usage_window(resets):
+    return resets or "unknown-" + str(int(time.time() // (5 * 3600)))
+
+
+def summary_request(cwd, session, pct, resets, source, transcript=None, last_message=None):
+    """Once per usage window, past prepare_at, ask the agent to write its own summary into the checkpoint.
+
+    Returns the instruction for a Stop hook to send back (decision: block), or None.
+    """
+    cfg = config()
+    if pct is None or pct < cfg["prepare_at"]:
+        return None
+    path = checkpoint(cwd, session)
+    with session_state(cwd, f"summary:{source}:{session or 'manual'}") as state:
+        if state.get("requested_for") == usage_window(resets):
+            return None
+        if not path.is_file():
+            build_handoff(cwd, transcript, f"5-hour usage at {pct:.0f}%", resets, session, source, last_message)
+        state["requested_for"] = usage_window(resets)
+    relative = path.relative_to(Path(cwd).resolve()).as_posix()
+    log(f"{source} stop: asked the agent for its summary at {pct:.0f}%")
+    return (f"Claude Relay: your 5-hour usage is at {pct:.0f}%, so a handoff to Antigravity is close. Before you "
+            f"stop, open {relative} and replace the line under '{SUMMARY_HEADING[3:]}' with a short summary "
+            "(max 8 bullets): what is done, what is in progress, the exact next step, and any gotchas. Change "
+            "nothing else in that file, then stop.")
+
+
+def schedule_return(cwd, session, source, resets, cfg):
+    """After an automatic switch, start a background waiter that hands the work back once the limit resets."""
+    agent = AGENTS[source][0]
+    if not cfg.get("auto_return", True):
+        return "Automatic return is off (config auto_return off)."
+    if not resets:
+        return "Reset time unknown, so no automatic return: run relay.py back --launch after the reset."
+    if cfg.get("dry_run"):
+        return f"[dry-run] would hand the work back to {agent} at {fmt_time(resets)}."
+    argv = [sys.executable, str(Path(__file__).resolve()), "return-after-reset", "--cwd", str(Path(cwd).resolve()),
+            "--to", source, "--at", str(int(resets)), "--session", session or "manual"]
+    options = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    try:
+        if IS_WIN:
+            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            try:  # leave the hook's job object, so the waiter outlives the hook process
+                subprocess.Popen(argv, creationflags=flags | 0x01000000, **options)
+            except OSError:
+                subprocess.Popen(argv, creationflags=flags, **options)
+        else:
+            subprocess.Popen(argv, start_new_session=True, **options)
+    except OSError as error:
+        log(f"auto return not scheduled: {error}")
+        return "Automatic return could not start: run relay.py back --launch after the reset."
+    log(f"auto return scheduled: back to {agent} at {fmt_time(resets)} ({cwd})")
+    return f"{agent} will be reopened automatically after the reset at {fmt_time(resets)}."
+
+
+def cmd_return_after_reset(args):
+    """Background waiter: sleep until the limit resets, then run back --launch for the source agent."""
+    try:
+        target = args.at + 60
+        while target - time.time() > 0:
+            time.sleep(min(target - time.time(), 600))
+        if args.to == "codex":  # confirm with the app-server; the reset time is an estimate
+            for _ in range(36):
+                usage = CodexCLI.read_usage()
+                if usage and not CodexCLI.limit_reached(usage):
+                    break
+                time.sleep(600)
+        with session_state(args.cwd, f"return:{args.to}:{args.session}") as state:
+            if state.get("returned_for") == args.at:
+                return
+            state["returned_for"] = args.at
+        agent = AGENTS[args.to][0]
+        notify("Claude Relay", f"Your {AGENTS[args.to][1]} limit has reset. Handing the work back to {agent}.")
+        log(f"auto return: limit reset, handing the work back to {agent}")
+        cmd_back(argparse.Namespace(cwd=args.cwd, session=args.session, launch=True, resume=False, to=args.to))
+    except (Exception, SystemExit) as error:
+        log(f"auto return failed: {error}")
+
+
+def cmd_on_stop(_args):
+    """Claude Code Stop hook: past prepare_at, ask Claude once to write its summary while it can still answer."""
+    data = read_stdin_json()
+    try:
+        if data.get("stop_hook_active"):
+            return
+        state = load_json(STATE_FILE, {})
+        pct = to_float(state.get("five_hour_pct"))
+        if pct is None or time.time() - float(state.get("updated") or 0) > 15 * 60:
+            return  # no fresh status-line reading
+        cwd, session, transcript = ClaudeCode.context(data)
+        reason = summary_request(cwd, session, pct, to_epoch(state.get("resets_at")), "claude", transcript)
+        if reason:
+            print(json.dumps({"decision": "block", "reason": reason}))
+    except Exception as error:  # a hook must never break the Claude session
+        log(f"on-stop error: {error}")
 
 
 def codex_state_file():
@@ -810,6 +956,7 @@ def codex_check(cwd, session=None, transcript=None, last_message=None, trigger="
                     state["last_switch"] = time.time()
                 msg = "Codex limit reached. " + ("Dry run: Antigravity launch simulated." if cfg["dry_run"]
                                                  else "Antigravity launch requested.")
+                msg += " " + schedule_return(cwd, session, "codex", resets, cfg)
             else:
                 msg = "Codex limit reached. Antigravity launch failed. Retry with relay.py launch."
             if not cfg["dry_run"]:
@@ -830,6 +977,7 @@ def cmd_codex_hook(_args):
     data = read_stdin_json()
     event = str(data.get("hook_event_name") or "").lower()
     simulated = bool(os.environ.get("RELAY_SIMULATED_CODEX_USAGE"))
+    output = {}
     try:
         if event == "postmodelrequest" and data.get("status") != "failed":
             return  # the common case: return immediately
@@ -838,15 +986,23 @@ def cmd_codex_hook(_args):
             fresh = time.time() - float(cached.get("updated") or 0) < CODEX_CHECK_INTERVAL
             if fresh and not CodexCLI.limit_reached(cached) and (to_float(cached.get("pct")) or 0) < config()["prepare_at"]:
                 return  # usage was read moments ago and is well below the threshold
-        message = codex_check(data.get("cwd") or os.getcwd(), clean_session(data.get("session_id")),
-                              data.get("transcript_path"), data.get("last_assistant_message"), event or "hook")
+        cwd, session = data.get("cwd") or os.getcwd(), clean_session(data.get("session_id"))
+        message = codex_check(cwd, session, data.get("transcript_path"), data.get("last_assistant_message"),
+                              event or "hook")
+        usage = load_json(codex_state_file(), {})
+        if event == "stop" and not data.get("stop_hook_active") and not CodexCLI.limit_reached(usage):
+            reason = summary_request(cwd, session, to_float(usage.get("pct")), to_epoch(usage.get("resets")), "codex",
+                                     data.get("transcript_path"), data.get("last_assistant_message"))
+            if reason:
+                output = {"decision": "block", "reason": reason}
+                message = (message + " " if message else "") + "Asked Codex to write its own summary first."
         if simulated and message:
             print(message, file=sys.stderr)
     except Exception as error:  # a hook must never break the Codex session
         log(f"codex-hook error: {error}")
     finally:
         if event == "stop":
-            print("{}")  # Codex expects JSON from a Stop hook
+            print(json.dumps(output))  # Codex expects JSON from a Stop hook
 
 
 def cmd_watch(args):
@@ -1173,6 +1329,16 @@ def simulate_hooks(cwd, env):
         out = subprocess.run(me + ["statusline"], input=json.dumps(payload), capture_output=True,
                              text=True, encoding="utf-8", cwd=cwd, env=env)
         print(f"status line at {pct}%:  {out.stdout.strip()}")
+    print("\nSimulating Claude Code's Stop hook at the end of that turn ...")
+    out = subprocess.run(me + ["on-stop"], input=json.dumps(
+        {"hook_event_name": "Stop", "cwd": cwd, "session_id": session, "stop_hook_active": False}),
+        capture_output=True, text=True, encoding="utf-8", cwd=cwd, env=env)
+    try:
+        reply = json.loads(out.stdout or "{}")
+    except ValueError:
+        reply = {}
+    print("Claude is asked to write its own summary first: " + reply["reason"][:150] + " …"
+          if reply.get("decision") == "block" else "(no summary request)")
     print("\nSimulating Claude Code's StopFailure hook (error_type = rate_limit) ...")
     out = subprocess.run(me + ["on-limit"], input=json.dumps(
         {"hook_event_name": "StopFailure", "error_type": "rate_limit", "cwd": cwd, "session_id": session}),
@@ -1214,6 +1380,8 @@ def cmd_doctor(_args):
     s = read_settings()
     manifest = load_json(installation_manifest(), {})
     check("Status line installed", manifest and s.get("statusLine") == manifest["status"], "Run: relay.py install")
+    check("Stop hook installed (summary before the limit)",
+          manifest and manifest.get("summary_hook") in s.get("hooks", {}).get("Stop", []), "Run: relay.py install")
     check("StopFailure hook installed", manifest and manifest["hook"] in s.get("hooks", {}).get("StopFailure", []),
           "Run: relay.py install")
     check("/handoff command installed", (CLAUDE_DIR / "commands" / "handoff.md").exists(), "Run: relay.py install")
@@ -1302,6 +1470,7 @@ CONFIG_RULES = {
     "color": ("bool", None),
     "redact": ("bool", None),
     "diff_lines": ("int", (0, 5000)),
+    "auto_return": ("bool", None),
 }
 
 
@@ -1388,7 +1557,15 @@ def cmd_install(args):
         stop_hooks.remove(owned_hook)
     if hook not in stop_hooks:
         stop_hooks.append(hook)
-    manifest = {"status": status, "original_status": original_status, "hook": hook, "commands": {}}
+    # Stop: past the prepare threshold, Claude is asked once to write its own summary into the checkpoint
+    summary_hook = {"hooks": [{"type": "command", "command": run("on-stop"), "timeout": 30}]}
+    turn_hooks = hooks.setdefault("Stop", [])
+    if previous.get("summary_hook") in turn_hooks:
+        turn_hooks.remove(previous["summary_hook"])
+    if summary_hook not in turn_hooks:
+        turn_hooks.append(summary_hook)
+    manifest = {"status": status, "original_status": original_status, "hook": hook, "summary_hook": summary_hook,
+                "commands": {}}
     cmd_dir = CLAUDE_DIR / "commands"
     cmd_dir.mkdir(parents=True, exist_ok=True)
     handoff_command = (
@@ -1455,8 +1632,10 @@ def install_codex(data, command, command_windows, run):
     hooks = data.setdefault("hooks", {})
     groups = {}
     for event in ("Stop", "PostModelRequest"):
+        # Stop runs in the foreground so it can ask Codex for its summary; it returns in well under a second
+        # except when usage is actually read (every 45 s at most). PostModelRequest only matters on failures.
         group = {"hooks": [{"type": "command", "command": command, "commandWindows": command_windows,
-                            "timeout": 60, "async": True,
+                            "timeout": 60, "async": event != "Stop",
                             "statusMessage": "Claude Relay: checking Codex usage"}]}
         entries = hooks.setdefault(event, [])
         owned = previous.get("groups", {}).get(event)
@@ -1522,8 +1701,9 @@ def read_settings():
     settings = load_json(CLAUDE_SETTINGS, None) if CLAUDE_SETTINGS.exists() else {}
     if not isinstance(settings, dict) or not isinstance(settings.get("hooks", {}), dict):
         raise ValueError(f"Invalid Claude settings at {CLAUDE_SETTINGS}.")
-    if not isinstance(settings.get("hooks", {}).get("StopFailure", []), list):
-        raise ValueError("Claude StopFailure settings must be a list.")
+    for event in ("StopFailure", "Stop"):
+        if not isinstance(settings.get("hooks", {}).get(event, []), list):
+            raise ValueError(f"Claude {event} settings must be a list.")
     return settings
 
 
@@ -1542,11 +1722,12 @@ def cmd_uninstall(_args):
         else:
             settings["statusLine"] = manifest["original_status"]
     hooks = settings.get("hooks", {})
-    stop_hooks = hooks.get("StopFailure", [])
-    if manifest["hook"] in stop_hooks:
-        stop_hooks.remove(manifest["hook"])
-        if not stop_hooks:
-            hooks.pop("StopFailure")
+    for event, owned in (("StopFailure", manifest["hook"]), ("Stop", manifest.get("summary_hook"))):
+        entries = hooks.get(event, [])
+        if owned and owned in entries:
+            entries.remove(owned)
+            if not entries:
+                hooks.pop(event)
     save_json(CLAUDE_SETTINGS, settings)
     for name, content in manifest["commands"].items():
         path = CLAUDE_DIR / "commands" / name
@@ -1575,8 +1756,13 @@ def main(argv=None):
     i.add_argument("--mode", choices=["auto", "manual"]); i.add_argument("--threshold", type=int)
     i.add_argument("--model")
     i.add_argument("--codex", action="store_true", help="also add the automatic switch to Codex CLI")
-    for name in ("uninstall", "statusline", "on-limit", "doctor", "codex-hook"):
+    for name in ("uninstall", "statusline", "on-limit", "doctor", "codex-hook", "on-stop"):
         sub.add_parser(name)
+    ret = sub.add_parser("return-after-reset")
+    ret.add_argument("--cwd", required=True)
+    ret.add_argument("--to", choices=["claude", "codex"], required=True)
+    ret.add_argument("--at", type=int, required=True)
+    ret.add_argument("--session", default="manual")
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     status.add_argument("--cwd")
@@ -1620,7 +1806,7 @@ def main(argv=None):
      "status": cmd_status, "doctor": cmd_doctor, "handoff": cmd_handoff, "launch": cmd_launch, "ask": cmd_ask,
      "back": cmd_back, "simulate": cmd_simulate, "preview": cmd_preview, "checkpoints": cmd_list,
          "purge-answers": cmd_purge, "config": cmd_config, "codex-hook": cmd_codex_hook,
-         "watch": cmd_watch}[args.cmd](args)
+         "watch": cmd_watch, "on-stop": cmd_on_stop, "return-after-reset": cmd_return_after_reset}[args.cmd](args)
     except (ValueError, OSError, subprocess.TimeoutExpired) as error:
         print(f"Relay: {error}", file=sys.stderr)
         sys.exit(2)
